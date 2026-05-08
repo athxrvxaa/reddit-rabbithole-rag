@@ -1,0 +1,7 @@
+gradio
+sentence-transformers
+faiss-cpu
+rank-bm25
+requests
+numpy
+datasets
