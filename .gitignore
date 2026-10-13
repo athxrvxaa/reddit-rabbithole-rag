@@ -1,4 +1,5 @@
-echo "embeddings.npy
-faiss_index.bin
-bm25_index.pkl
-outputs.zip" > .gitignore
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.cache/
