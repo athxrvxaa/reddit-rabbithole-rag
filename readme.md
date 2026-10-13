@@ -37,14 +37,18 @@ Gemini 2.5 Flash receives full retrieved answers and is instructed to cite sourc
 
 ## Evaluation status
 
-The original notebook reports faithfulness 0.81 from 20 questions judged by Gemini 2.5 Flash, which was also the generator family. The questions used the best retrieved answer as a reference, so this is not an independent benchmark. It is not evidence for a “no hallucination” claim. No reproducible labeled retrieval benchmark, ablation results, or latency measurements are currently checked in; those should be added before claiming comparative performance.
+The original notebook reports faithfulness 0.81 from 20 questions judged by Gemini 2.5 Flash, which was also the generator family. The questions used the best retrieved answer as a reference, so this is not an independent benchmark and is not evidence for a “no hallucination” claim.
 
-| Stage | Recall@k | MRR |
-|---|---:|---:|
-| BM25 | Not measured | Not measured |
-| Dense | Not measured | Not measured |
-| Hybrid RRF | Not measured | Not measured |
-| Hybrid + reranker | Not measured | Not measured |
+An initial retrieval ablation was run on 60 questions in `data/retrieval_judgments.jsonl`, with one relevant AMA thread labeled for each question. These are original questions copied from the corpus, and their source AMA supplies the label. Because the query wording appears in the indexed corpus, these scores are an optimistic self-retrieval check, not an independent user-query benchmark. Build a paraphrased, independently reviewed set before making comparative performance claims.
+
+| Stage | Recall@10 | MRR | Mean latency (s/query) |
+|---|---:|---:|---:|
+| BM25 | 1.000 | 1.000 | 0.007 |
+| Dense | 0.983 | 0.919 | 0.019 |
+| Hybrid RRF | 1.000 | 0.978 | 0.022 |
+| Hybrid + reranker | 1.000 | 1.000 | 1.553 |
+
+Reproduce with `python evaluate_retrieval.py --corpus data/ama_qa_enriched.jsonl --judgments data/retrieval_judgments.jsonl --k 10`. Latencies are local CPU timings and will vary by hardware and cache state.
 
 ## Known limitations
 

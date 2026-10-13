@@ -5,6 +5,7 @@ Only labeled judgments are accepted; this script does not invent relevance label
 """
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 
@@ -12,7 +13,6 @@ import numpy as np
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
 from retrieval import Retriever, load_corpus, tokenize
-from rank_bm25 import BM25Okapi
 
 
 def metrics(ranked_ids, relevant, k=10):
@@ -42,21 +42,22 @@ def main():
     if not judgments:
         raise SystemExit("Judgment file is empty")
     corpus = load_corpus(args.corpus)
-    model = SentenceTransformer("BAAI/bge-small-en-v1.5")
-    retriever = Retriever(corpus, model)
+    model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+    model_revision = os.getenv("EMBEDDING_REVISION", "main")
+    model = SentenceTransformer(model_name, revision=model_revision)
+    retriever = Retriever(corpus, model, model_name=model_name, model_revision=model_revision)
     reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-    bm25 = BM25Okapi([tokenize(f"{d['question']} {d['answer']}") for d in corpus])
     totals = {name: [0.0, 0.0] for name in ("BM25", "Dense", "Hybrid RRF", "Hybrid + rerank")}
     latency = {name: [] for name in totals}
     for row in judgments:
         query = row["question"]
         relevant = set(map(str, row["relevant_thread_ids"]))
         start = time.perf_counter()
-        bm25_order = np.argsort(bm25.get_scores(tokenize(query)))[::-1][:args.k]
+        bm25_order = np.argsort(retriever._bm25_scores(tokenize(query)))[::-1]
         latency["BM25"].append(time.perf_counter() - start)
         start = time.perf_counter()
         query_vec = model.encode([query], normalize_embeddings=True, convert_to_numpy=True)[0]
-        dense_order = np.argsort(retriever.embeddings @ query_vec)[::-1][:args.k]
+        dense_order = np.argsort(retriever.embeddings @ query_vec)[::-1]
         latency["Dense"].append(time.perf_counter() - start)
         start = time.perf_counter()
         hybrid = retriever.search(query, candidate_k=max(args.k, 40))
