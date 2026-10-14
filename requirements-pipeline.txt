@@ -1,0 +1,4 @@
+# Full pipeline (ingestion, extraction, eval, tests)
+-r requirements.txt
+datasets>=2.19
+pytest>=8.0

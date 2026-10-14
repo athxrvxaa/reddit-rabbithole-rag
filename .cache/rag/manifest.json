@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "corpus_sha256": "c5ad328129a71769b31a42af1e1d988012f99685559bab16e29449992246f29f",
+  "model_name": "BAAI/bge-small-en-v1.5",
+  "model_revision": "main",
+  "count": 3639,
+  "dimension": 384
+}

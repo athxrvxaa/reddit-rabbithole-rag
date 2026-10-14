@@ -1,64 +1,99 @@
-# Reddit AMA Rabbit Hole
+# 🕳️ Reddit RabbitHole RAG — v2
 
-A retrieval augmented generation demo over historical r/IAmA comments. It retrieves personal accounts and links back to the source thread. AMA posts and comments are user generated and are not independently verified. The active local corpus currently contains 3,639 pairs across 650 threads, collected from multiple segments of the Hugging Face dataset. It reflects Reddit's r/IAmA participants and has substantial historical, demographic, topic, and selection bias.
+Ask a question, get an answer **cited from real Reddit AMAs** (r/IAmA). Each claim points to the AMA it came from, with a link back to the original comment.
 
-## Run locally
+v2 is a rebuild of [v1](https://github.com/athxrvxaa/reddit-rabbithole-rag/tree/v1.0) focused on **scale and measurable quality**:
 
-```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python build_index.py
-$env:GEMINI_API_KEY = "your-key"
-python app.py
+| | v1 | v2 |
+|---|---|---|
+| Data | first ~500k comments, streamed once | whole IAmA split, resumable ingest into SQLite |
+| Who is the OP? | guessed from comment counts | **true submission author** (Arctic Shift), heuristic only as flagged fallback |
+| Q&A cleaning | raw text (HTML entities, quote walls, OP↔OP replies) | unescape, de-quote, bot/OP/follow-up filters, score filter, dedupe, per-thread cap |
+| Lexical search | `rank_bm25` (pickle, O(N) Python) | `bm25s` (sparse, saved without pickle) |
+| Fusion | 0.3·BM25 + 0.7·cosine (different scales) | Reciprocal Rank Fusion |
+| Candidates reranked | 10 | 30 (configurable) |
+| Diversity | none (one AMA could fill the results) | max 2 hits per AMA |
+| "Not in the AMAs" | LLM decides | cross-encoder score gate **plus** LLM instruction |
+| Generation | text cut at 500 chars, uncited | sentence-aware context, `[n]` citations, **validated** after generation, streaming |
+| Corpus store | jsonl in RAM | SQLite (memory-light), artifacts hosted on HF Hub |
+| Evaluation | 20 questions, one metric | Recall@k / MRR ablation, abstain calibration, citation checks |
+
+## Pipeline
+
+```mermaid
+flowchart LR
+  A[HF REDDIT_comments<br/>IAmA split] -->|ingest| B[(SQLite<br/>comments)]
+  C[Arctic Shift API<br/>post author + title] -->|meta| D[(threads)]
+  B --> E[extract]
+  D --> E
+  E --> F[(pairs)]
+  F -->|index| G[FAISS + BM25 + corpus.db]
+  G --> H[hybrid RRF] --> I[cross-encoder rerank] --> J[per-AMA cap + abstain gate] --> K[Gemini, cited] --> L[citation check]
 ```
 
-The app creates cleaned records and stores normalized embeddings (`embeddings.npy`), a FAISS index (`faiss.index`), and a SQLite BM25 postings index (`bm25.sqlite3`) in `.cache/rag/`. Startup reuses the cache while the corpus fingerprint and embedding model name/revision match; it rebuilds when either changes or a cache artifact is missing/corrupt. Set `RAG_CACHE_DIR` to use a different cache location. No Python pickle is read or written. The first run downloads the embedding and reranker models and builds the indexes; later runs load them from disk. Put `GEMINI_API_KEY=your-key` in the local `.env` file; it is ignored by Git. The key is needed only for generated answers; retrieval can still run without it.
+## Quick start (2 minutes, no big downloads)
 
-## Data pipeline
-
-`ingest.py` streams the `HuggingFaceGECLM/REDDIT_comments` IAmA split, groups comments by thread, infers the OP from repeated top-level participation, and keeps OP replies to a different author's direct parent comment. It then fetches post titles/context from Arctic Shift and writes a cleaned JSONL corpus. Install the optional ingestion dependency with `pip install -r requirements-ingest.txt`. Use `--offset` to process a later segment and merge with the current corpus into a separate candidate file:
+Uses your old v1 file just to prove everything works end to end. The "hash" embedder is a test stub, **not** for real use.
 
 ```bash
-python ingest.py --offset 1000000 --max-comments 500000 --min-answer-score 0 \
-  --base-corpus data/ama_qa_enriched.jsonl \
-  --output data/ama_qa_enriched_next.jsonl
+python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements-pipeline.txt
+python -m rabbithole import-v1 path/to/ama_qa_enriched.jsonl
+python -m rabbithole index --embedder hash
+RR_USE_RERANKER=0 python -m rabbithole search "what do inmates do all day" --mode hybrid --no-rerank
 ```
 
-Streaming is not a complete or uniformly sampled Reddit archive. Metadata lookups can fail and omit some threads. Inspect the output and extraction assumptions before publishing a regenerated corpus. The previous local corpus is backed up at `data/ama_qa_enriched_before_hf.jsonl`.
+## Real run (full scale)
 
-`qa_pairs_combined.jsonl` is an intermediate output from the original Week 1 notebook. It contains un-enriched extracted pairs and is not read by the app; the enriched corpus is the runtime input.
+Run on Kaggle/Colab for the heavy steps — see [docs/KAGGLE.md](docs/KAGGLE.md).
 
-## Retrieval and answer flow
+```bash
+cp .env.example .env            # add GEMINI_API_KEY (never commit .env)
+python -m rabbithole ingest     # resumable; streams the full IAmA split
+python -m rabbithole meta       # real OP + title per thread
+python -m rabbithole extract    # clean Q&A pairs
+python -m rabbithole stats      # look at the numbers before indexing
+python -m rabbithole index      # embeddings (GPU helps) + FAISS + BM25
+python app.py                   # http://127.0.0.1:7860
+```
 
-The app cleans HTML entities and whitespace, filters very short/long questions and low-score answers, and deduplicates exact Q&A pairs. It searches cleaned question plus answer text with BM25 (normalized tokenization, stopword removal, stemming) and BGE small dense embeddings; Reciprocal Rank Fusion combines ranked lists. A cross-encoder reranks 40 candidates, then results are limited to one per AMA thread. A configurable abstention gate avoids generation when no reranked source clears its threshold. The default threshold is model specific; tune `ABSTAIN_THRESHOLD` against a labeled evaluation set.
+Useful commands: `search`, `ask`, `gemini-models`, `upload`. Everything is configurable via env vars (see `rabbithole/config.py`).
 
-Gemini 2.5 Flash receives full retrieved answers and is instructed to cite source numbers inline. The app removes citations to nonexistent source IDs. This basic validation does not prove each citation supports its claim, and the generated answer can still be wrong.
+## Evaluation (fill in your numbers)
 
-## Evaluation status
+```bash
+python -m rabbithole eval-make -n 200        # synthetic questions written by Gemini from sampled pairs
+python -m rabbithole eval-retrieval          # ablation table -> eval/results/retrieval.md
+python -m rabbithole calibrate               # picks RR_ABSTAIN_THRESHOLD from in/out-of-domain queries
+python -m rabbithole eval-generation --judge # citation validity, abstain rates, optional LLM faithfulness
+```
 
-The original notebook reports faithfulness 0.81 from 20 questions judged by Gemini 2.5 Flash, which was also the generator family. The questions used the best retrieved answer as a reference, so this is not an independent benchmark and is not evidence for a “no hallucination” claim.
+Paste your results here after running them (don't ship placeholder numbers):
 
-An initial retrieval ablation was run on 60 questions in `data/retrieval_judgments.jsonl`, with one relevant AMA thread labeled for each question. These are original questions copied from the corpus, and their source AMA supplies the label. Because the query wording appears in the indexed corpus, these scores are an optimistic self-retrieval check, not an independent user-query benchmark. Build a paraphrased, independently reviewed set before making comparative performance claims.
+| Mode | R@1 | R@5 | R@10 | MRR@20 | Latency |
+|---|---|---|---|---|---|
+| BM25 | | | | | |
+| Dense | | | | | |
+| Hybrid (RRF) | | | | | |
+| Hybrid + rerank | | | | | |
 
-| Stage | Recall@10 | MRR | Mean latency (s/query) |
-|---|---:|---:|---:|
-| BM25 | 1.000 | 1.000 | 0.007 |
-| Dense | 0.983 | 0.919 | 0.019 |
-| Hybrid RRF | 1.000 | 0.978 | 0.022 |
-| Hybrid + reranker | 1.000 | 1.000 | 1.553 |
-
-Reproduce with `python evaluate_retrieval.py --corpus data/ama_qa_enriched.jsonl --judgments data/retrieval_judgments.jsonl --k 10`. Latencies are local CPU timings and will vary by hardware and cache state.
+Caveats worth stating: the eval queries are synthetic (written by an LLM from the pair), only the source pair counts as "relevant" so recall is a lower bound (thread-level recall is also reported), and the faithfulness judge is an LLM, ideally a different model from the generator.
 
 ## Known limitations
 
-- OP inference uses author frequency among top-level comments. It can misidentify the AMA subject, and the extractor cannot recover context missing from the streamed sample.
-- Thread metadata enrichment relies on a third-party archive API.
-- The corpus is old, uneven, user generated, and not representative of Reddit or the public generally. Votes are a noisy quality signal.
-- The corpus contains sensitive topics and harmful language. Retrieval does not currently have a dedicated content moderation or self-harm escalation layer.
-- Abstention is heuristic until calibrated on labeled data. Cross-encoder scores are not probabilities.
-- This is a local demo pipeline, not a production service: there is no authentication, rate limiting, monitoring, or formal safety review.
+- Data is old Reddit (2009+), so it is anecdotal, dated, and skews toward early-Reddit demographics.
+- The OP is "verified" only in the sense that they authored the thread; Reddit's AMA verification is not in this data.
+- Categories are keyword heuristics; many AMAs land in `other`.
+- Content includes sensitive topics (abuse, addiction, self-harm). The generator is told to treat answers as anecdotes, not advice.
+- The abstain threshold is only as good as its calibration set.
 
-## Source notebooks
+## Layout
 
-The Week 1 and Week 2 notebooks in the original project folder document the exploratory collection and prototype evolution. The checked-in scripts are the maintained execution path. One notebook includes a hardcoded Gemini credential; revoke and rotate that key, and remove it from any shared notebook copies/history.
+```
+rabbithole/   ingest.py meta.py extract.py indexing.py retrieval.py generation.py pipeline.py eval.py cli.py ...
+app.py        Gradio UI (streaming, source cards, topic filter, rate limit)
+tests/        24 tests (cleaning, extraction rules, retrieval/RRF/abstain, Gemini client, citations)
+eval/         seed queries; results land in eval/results/
+deploy/       Hugging Face Space files + helper script
+docs/         Kaggle runbook
+```
