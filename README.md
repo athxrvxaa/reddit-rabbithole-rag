@@ -44,7 +44,9 @@ The query set is synthetic, and only the source pair counts as pair-level releva
 
 Python 3.10–3.13 is supported. On Windows, run `./run_local.ps1` from PowerShell. It creates `.venv`, installs the app dependencies, downloads the public runtime artifacts on first start, and serves the app at <http://127.0.0.1:7860/>. Keep the window open while using the app. To skip dependency installation, run `./run_local.ps1 -SkipInstall`.
 
-The public index is configured by default. Copy `.env.example` to `.env` and add a valid `GEMINI_API_KEY` for generated answers; without it, retrieval can load but answer generation reports a missing Gemini configuration. Never commit `.env`.
+Set `GRADIO_SERVER_PORT` before launch to choose another port (for example, `$env:GRADIO_SERVER_PORT = "7861"` in PowerShell). If the configured port is occupied, Gradio searches for an available port automatically.
+
+The public index is configured by default. Copy `.env.example` to `.env` and add a valid `GEMINI_API_KEY` for generated answers. Gemini 3.8 Flash is the default answer model and uses low thinking for faster responses; override it with `GEMINI_MODEL` if needed. Without an API key, retrieval can load but answer generation reports a missing Gemini configuration. Never commit `.env`.
 
 For pipeline development, install the full dependency set and configure keys in `.env`:
 

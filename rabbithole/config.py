@@ -75,7 +75,7 @@ class Settings:
 
     # generation
     gemini_api_key: str = field(default_factory=lambda: _env("GEMINI_API_KEY", ""))
-    gemini_model: str = field(default_factory=lambda: _env("GEMINI_MODEL", "gemini-flash-latest"))
+    gemini_model: str = field(default_factory=lambda: _env("GEMINI_MODEL", "gemini-3.8-flash"))
     gemini_fallbacks: list[str] = field(
         default_factory=lambda: [m.strip() for m in _env("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash,gemini-flash-lite-latest").split(",") if m.strip()]
     )

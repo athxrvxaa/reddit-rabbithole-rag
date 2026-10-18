@@ -84,10 +84,16 @@ class GeminiClient:
         return cls(s.gemini_api_key, s.gemini_model, s.gemini_fallbacks, max_output_tokens=s.max_output_tokens, **kw)
 
     # -- request plumbing ------------------------------------------------------
-    def _body(self, prompt: str, system: str | None, temperature: float, with_thinking: bool) -> dict:
+    def _body(
+        self, prompt: str, system: str | None, temperature: float,
+        with_thinking: bool, model: str | None = None,
+    ) -> dict:
         gen = {"maxOutputTokens": self.max_output_tokens, "temperature": temperature}
-        if with_thinking and self.thinking_budget is not None:
-            gen["thinkingConfig"] = {"thinkingBudget": self.thinking_budget}
+        if with_thinking:
+            if model and model.startswith("gemini-3"):
+                gen["thinkingConfig"] = {"thinkingLevel": "low"}
+            elif self.thinking_budget is not None:
+                gen["thinkingConfig"] = {"thinkingBudget": self.thinking_budget}
         body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}], "generationConfig": gen}
         if system:
             body["systemInstruction"] = {"parts": [{"text": system}]}
@@ -107,7 +113,11 @@ class GeminiClient:
             with_thinking = True
             for attempt in range(self.max_retries):
                 try:
-                    r = self._post(model, self._body(prompt, system, temperature, with_thinking), stream)
+                    r = self._post(
+                        model,
+                        self._body(prompt, system, temperature, with_thinking, model=model),
+                        stream,
+                    )
                 except requests.RequestException as e:
                     last = str(e)
                     time.sleep(2 ** attempt)

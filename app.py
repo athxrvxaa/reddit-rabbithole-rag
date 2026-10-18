@@ -156,5 +156,23 @@ Ask a question — get an answer **cited from real Reddit AMAs**.
 
 demo.queue(max_size=20, default_concurrency_limit=4)
 
+def launch_app():
+    configured_port = os.environ.get("GRADIO_SERVER_PORT", "").strip() or "7860"
+    try:
+        server_port = int(configured_port)
+    except ValueError as exc:
+        raise ValueError("GRADIO_SERVER_PORT must be a valid port number.") from exc
+
+    try:
+        demo.launch(server_name="127.0.0.1", server_port=server_port)
+    except OSError as exc:
+        if "Cannot find empty port" not in str(exc):
+            raise
+        print(
+            f"Port {server_port} is busy; asking Gradio to select an available port."
+        )
+        demo.launch(server_name="127.0.0.1", server_port=None)
+
+
 if __name__ == "__main__":
-    demo.launch(server_name="127.0.0.1", server_port=7860)
+    launch_app()
