@@ -6,7 +6,5 @@ bm25s>=0.2.0
 PyStemmer>=2.2
 sentence-transformers>=3.0
 huggingface_hub>=0.24
-gradio>=4.44
+gradio>=4.44,<6
 tqdm
-gradio
-requests

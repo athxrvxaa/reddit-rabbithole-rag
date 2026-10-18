@@ -42,7 +42,11 @@ The query set is synthetic, and only the source pair counts as pair-level releva
 
 ## Run locally
 
-Python 3.10–3.13 is supported. Install pipeline dependencies and set keys in a local `.env` copied from `.env.example` (never commit `.env`).
+Python 3.10–3.13 is supported. On Windows, run `./run_local.ps1` from PowerShell. It creates `.venv`, installs the app dependencies, downloads the public runtime artifacts on first start, and serves the app at <http://127.0.0.1:7860/>. Keep the window open while using the app. To skip dependency installation, run `./run_local.ps1 -SkipInstall`.
+
+The public index is configured by default. Copy `.env.example` to `.env` and add a valid `GEMINI_API_KEY` for generated answers; without it, retrieval can load but answer generation reports a missing Gemini configuration. Never commit `.env`.
+
+For pipeline development, install the full dependency set and configure keys in `.env`:
 
 ```bash
 python -m venv .venv

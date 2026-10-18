@@ -25,7 +25,8 @@ _load_dotenv()
 
 
 def _env(name: str, default: str) -> str:
-    return os.environ.get(name, default)
+    # Treat empty values (common in copied .env templates) as unset so defaults apply.
+    return os.environ.get(name) or default
 
 
 def _env_float(name: str, default: float | None) -> float | None:
@@ -81,7 +82,10 @@ class Settings:
     max_output_tokens: int = field(default_factory=lambda: int(_env("RR_MAX_OUT", "2048")))
 
     # artifacts hosting
-    artifacts_repo: str = field(default_factory=lambda: _env("ARTIFACTS_REPO", ""))
+    # Public runtime index; override this in .env for a different/private dataset.
+    artifacts_repo: str = field(
+        default_factory=lambda: _env("ARTIFACTS_REPO", "athxrvxaa/rabbithole-artifacts")
+    )
 
     @property
     def db_path(self) -> Path:

@@ -126,7 +126,7 @@ EXAMPLES = [
     ["What is the hardest part of being a nurse?", 4, "all"],
     ["How do you recover from addiction?", 4, "all"],
     ["What was it like growing up in a cult?", 4, "all"],
-    ["What do soldiers miss most while deployed?", 4, "military"],
+    ["What do soldiers miss most while deployed?", 4, "all"],
 ]
 
 with gr.Blocks(title="Reddit RabbitHole RAG") as demo:
@@ -157,4 +157,4 @@ Ask a question — get an answer **cited from real Reddit AMAs**.
 demo.queue(max_size=20, default_concurrency_limit=4)
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(server_name="127.0.0.1", server_port=7860)
