@@ -32,7 +32,7 @@ def make_synthetic_queries(artifacts_dir: Path, llm: GeminiClient, n: int, out_p
     rng.shuffle(ids)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     existing = load_jsonl(out_path) if out_path.exists() else []
-    done_ids = {int(row["idx"]) for row in existing if "idx" in row}
+    done_ids = {str(row.get("answer_id")) for row in existing if row.get("answer_id")}
     done = len(existing)
     if len(ids) < 200:
         print(f"Warning: only {len(ids)} eligible source queries exist (recommended: at least 200).")
@@ -41,9 +41,9 @@ def make_synthetic_queries(artifacts_dir: Path, llm: GeminiClient, n: int, out_p
         for idx in ids:
             if done >= n:
                 break
-            if idx in done_ids:
-                continue
             r = con.execute("SELECT * FROM docs WHERE idx=?", (idx,)).fetchone()
+            if str(r["answer_id"] or "") in done_ids:
+                continue
             try:
                 q = llm.generate(QGEN_PROMPT.format(q=r["question"][:400], a=r["answer"][:900]), temperature=0.7).strip()
             except GeminiQuotaError as e:
@@ -56,7 +56,7 @@ def make_synthetic_queries(artifacts_dir: Path, llm: GeminiClient, n: int, out_p
             q = q.strip().strip('"').splitlines()[0] if q else ""
             if len(q) < 10:
                 continue
-            f.write(json.dumps({"query": q, "idx": int(idx), "thread_id": r["thread_id"]}) + "\n")
+            f.write(json.dumps({"query": q, "idx": int(idx), "answer_id": r["answer_id"], "thread_id": r["thread_id"]}) + "\n")
             f.flush()
             done += 1
             done_ids.add(idx)
@@ -69,6 +69,41 @@ def make_synthetic_queries(artifacts_dir: Path, llm: GeminiClient, n: int, out_p
 
 def load_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in open(path, encoding="utf-8") if line.strip()]
+
+
+def current_index_queries(artifacts_dir: Path, queries: list[dict]) -> tuple[list[dict], int]:
+    """Resolve stable answer ids, or validate legacy positional ids against their thread."""
+    con = sqlite3.connect(str(Path(artifacts_dir) / "corpus.db"))
+    try:
+        columns = {row[1] for row in con.execute("PRAGMA table_info(docs)")}
+        docs = {int(idx): str(tid) for idx, tid in con.execute("SELECT idx, thread_id FROM docs")}
+        by_answer = {}
+        if "answer_id" in columns:
+            by_answer = {str(aid): int(idx) for idx, aid in con.execute(
+                "SELECT idx, answer_id FROM docs WHERE answer_id IS NOT NULL AND answer_id != ''"
+            )}
+    finally:
+        con.close()
+    fresh = []
+    dropped = 0
+    for query in queries:
+        if query.get("answer_id"):
+            idx = by_answer.get(str(query["answer_id"]))
+        else:
+            idx = query.get("idx")
+            try:
+                idx = int(idx)
+            except (TypeError, ValueError):
+                idx = None
+            if idx is not None and docs.get(idx) != str(query.get("thread_id", "")):
+                idx = None
+        if idx is None:
+            dropped += 1
+        else:
+            fresh.append({**query, "idx": idx})
+    if queries and dropped / len(queries) > 0.5:
+        raise ValueError(f"{dropped} of {len(queries)} evaluation queries are stale; regenerate queries with eval-make.")
+    return fresh, dropped
 
 
 # --------------------------------------------------------------------------- retrieval ablation

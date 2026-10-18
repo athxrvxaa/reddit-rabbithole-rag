@@ -2,10 +2,12 @@ import numpy as np
 import pytest
 
 from rabbithole.config import Settings
+from rabbithole.artifacts import manifest_year_text
 from rabbithole.db import connect
 from rabbithole.embed import HashEmbedder
 from rabbithole.indexing import build_index
 from rabbithole.retrieval import Retriever, rrf_fuse
+from rabbithole.store import CorpusStore
 
 DOCS = [
     # (thread, title, category, question, answer)
@@ -33,7 +35,7 @@ def retriever(tmp_path_factory):
         con.execute(
             "INSERT INTO pairs(thread_id,op_author,op_source,title,context,category,question,answer,question_id,answer_id,"
             "question_score,answer_score,created_utc,source_url,content_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (t, "op", "submission", title, "", cat, q, a, f"q{i}", f"a{i}", 3, 5, 0, f"https://r/{t}/{i}", f"h{i}"),
+            (t, "op", "submission", title, "", cat, q, a, f"q{i}", f"a{i}", 3, 5, 1_250_000_000 + i * 100, f"https://r/{t}/{i}", f"h{i}"),
         )
     con.commit()
     emb = HashEmbedder(128)
@@ -47,6 +49,9 @@ def test_rrf_prefers_agreement():
 
 
 def test_modes_find_relevant(retriever):
+    assert "created_utc" in retriever.store.get(0)
+    assert retriever.manifest["min_year"] == 2009
+    assert retriever.manifest["max_year"] == 2009
     for mode in ("bm25", "dense", "hybrid", "hybrid_rerank"):
         res = retriever.search("what do inmates do all day in prison", top_k=3, mode=mode, per_thread=0)
         assert res.hits and res.hits[0].doc["thread_id"] == "t1", mode
@@ -94,3 +99,15 @@ def test_two_tier_confidence_gate(retriever):
 
 def test_empty_and_stopword_query(retriever):
     assert retriever.search("the of and", top_k=3, mode="bm25").hits == []
+
+
+def test_old_artifact_corpus_without_created_utc_still_loads(tmp_path):
+    import sqlite3
+    path = tmp_path / "corpus.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE docs(idx INTEGER PRIMARY KEY, thread_id TEXT, title TEXT)")
+    con.execute("INSERT INTO docs VALUES (0, 't1', 'old artifact')")
+    con.commit(); con.close()
+    assert CorpusStore(path).get(0) == {"idx": 0, "thread_id": "t1", "title": "old artifact"}
+    assert manifest_year_text({"version": 2}) == ""
+    assert manifest_year_text({"min_year": 2009, "max_year": 2011}) == " · threads from 2009-2011"

@@ -35,7 +35,8 @@ def _p() -> argparse.ArgumentParser:
     s = sub.add_parser("import-v1", help="re-clean the v1 jsonl into pairs (quick smoke test, no big download)")
     s.add_argument("path")
 
-    sub.add_parser("stats", help="print corpus statistics")
+    s = sub.add_parser("stats", help="print corpus statistics")
+    s.add_argument("--artifacts", action="store_true", help="read year histogram from artifacts/corpus.db")
 
     s = sub.add_parser("index", help="build FAISS + BM25 + doc store artifacts")
     s.add_argument("--embedder", choices=["st", "hash"], default="st", help="'hash' = fast fake embedder for smoke tests only")
@@ -111,7 +112,7 @@ def main(argv: list[str] | None = None) -> None:
         import_v1_jsonl(s, a.path)
     elif c == "stats":
         from .extract import corpus_stats
-        corpus_stats(s)
+        corpus_stats(s, artifacts=a.artifacts)
     elif c == "index":
         from .embed import make_embedder
         from .indexing import build_index
@@ -149,9 +150,17 @@ def main(argv: list[str] | None = None) -> None:
         llm = GeminiClient(s.gemini_api_key, a.model, s.gemini_fallbacks) if a.model else GeminiClient.from_settings(s)
         make_synthetic_queries(s.artifacts_dir, llm, a.n, Path(a.out), sleep=a.sleep)
     elif c == "eval-retrieval":
-        from .eval import eval_retrieval, intervals_overlap, load_jsonl, results_markdown
+        from .eval import current_index_queries, eval_retrieval, intervals_overlap, load_jsonl, results_markdown
         from .pipeline import load_retriever
-        qs = load_jsonl(Path(a.queries))
+        from .artifacts import ensure_artifacts
+        ensure_artifacts(s.artifacts_dir, s.artifacts_repo)
+        try:
+            qs, dropped = current_index_queries(s.artifacts_dir, load_jsonl(Path(a.queries)))
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(f"dropped {dropped} stale evaluation queries")
+        if not qs:
+            raise SystemExit("No current evaluation queries remain; regenerate queries with eval-make.")
         out = Path("eval/results"); out.mkdir(parents=True, exist_ok=True)
         names = a.reranker or [None]
         all_per_query = []

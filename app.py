@@ -9,6 +9,7 @@ from collections import OrderedDict, defaultdict, deque
 import gradio as gr
 
 from rabbithole.config import get_settings
+from rabbithole.artifacts import manifest_year_text
 from rabbithole.generation import GeminiError, check_citations
 from rabbithole.text import short
 
@@ -24,9 +25,7 @@ except Exception as e:  # show the problem in the UI instead of crashing the Spa
 
 N_DOCS = PIPELINE.retriever.n if PIPELINE else 0
 N_THREADS = PIPELINE.retriever.manifest.get("n_threads", 0) if PIPELINE else 0
-MIN_YEAR = PIPELINE.retriever.manifest.get("min_year") if PIPELINE else None
-MAX_YEAR = PIPELINE.retriever.manifest.get("max_year") if PIPELINE else None
-YEAR_TEXT = f" · threads from {MIN_YEAR}-{MAX_YEAR}" if MIN_YEAR and MAX_YEAR else ""
+YEAR_TEXT = manifest_year_text(PIPELINE.retriever.manifest if PIPELINE else {})
 CATEGORIES = ["all"] + (PIPELINE.retriever.categories if PIPELINE else [])
 
 # ---- tiny abuse protection (your Gemini quota is the cost) --------------------------------

@@ -1,4 +1,7 @@
-from rabbithole.extract import ExtractConfig, extract_thread, is_bot, pick_op
+import sqlite3
+
+from rabbithole.config import Settings
+from rabbithole.extract import ExtractConfig, _artifact_year_stats, extract_thread, is_bot, pick_op
 
 LONG = "This is a sufficiently long answer from the host that explains things in real detail for the reader. " * 2
 
@@ -33,6 +36,16 @@ def test_extract_with_true_op():
     p6 = next(p for p in pairs if p["answer_id"] == "r6")
     assert "typical day" not in p6["answer"].split(".")[0].lower() or ">" not in p6["answer"]
     assert pairs[0]["answer_score"] >= pairs[1]["answer_score"]  # sorted by score
+
+
+def test_artifact_stats_handles_old_docs_without_dates(tmp_path, capsys):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    con = sqlite3.connect(artifacts / "corpus.db")
+    con.execute("CREATE TABLE docs(idx INTEGER PRIMARY KEY, thread_id TEXT)")
+    con.commit(); con.close()
+    _artifact_year_stats(Settings(data_dir=tmp_path / "missing", artifacts_dir=artifacts))
+    assert "no created_utc column" in capsys.readouterr().out
     assert pairs[0]["category"] == "health_medicine"
     assert pairs[0]["source_url"].startswith("https://www.reddit.com/comments/T/_/")
 

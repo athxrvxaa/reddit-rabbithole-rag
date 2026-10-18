@@ -70,6 +70,7 @@ def ingest(
         print("Parquet shards were not found for the configured split; falling back to streaming.")
     con = connect(settings.db_path)
     consumed = int(get_state(con, "ingest_consumed", "0") or 0)
+    session_start = consumed
     if get_state(con, "ingest_complete") == "1":
         print("Ingest already complete. Delete the DB to start over.")
         return
@@ -89,6 +90,9 @@ def ingest(
         f"Streaming {settings.hf_dataset} [{settings.hf_split}] (resuming at row {consumed:,}; "
         f"thread sample rate {thread_sample_rate}; {kept_total:,} rows already stored)"
     )
+    from .source_info import split_size
+    advertised_size = split_size(settings)
+    mismatch_warned = False
     retries = 0
     t0 = time.time()
     while True:
@@ -108,7 +112,10 @@ def ingest(
                     kept_total += len(buf)
                     consumed = _flush(con, buf, consumed, seen)
                     buf, seen = [], 0
-                    rate = consumed / max(time.time() - t0, 1)
+                    rate = _session_rate(consumed, session_start, time.time() - t0)
+                    if advertised_size and consumed > advertised_size and not mismatch_warned:
+                        print("WARNING: dataset metadata count looks stale")
+                        mismatch_warned = True
                     print(f"  scanned {consumed:,} rows ({rate:,.0f}/s) | kept {kept_total:,}")
                     retries = 0
                     if (max_comments and consumed >= max_comments) or (target_rows and kept_total >= target_rows):
@@ -119,6 +126,7 @@ def ingest(
                 consumed = _flush(con, buf, consumed, seen)
                 set_state(con, "ingest_complete", "1")
                 con.commit()
+            print_ingest_state(con)
             break
         except KeyboardInterrupt:
             print("Interrupted. Progress is saved; re-run to resume.")
@@ -176,6 +184,7 @@ def _ingest_parquet(settings: Settings, max_comments: int | None, rate: float, t
         raise SystemExit(f"This DB was started with --thread-sample-rate {previous_rate} but you passed {rate}. Use the same rate to resume, or delete the DB to start over.")
     set_state(con, "ingest_sample_rate", repr(rate)); con.commit()
     consumed = int(get_state(con, "ingest_parquet_consumed", "0") or 0)
+    session_start = consumed
     kept_total = con.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
     if target_rows and kept_total >= target_rows:
         print(f"Target already reached: {kept_total:,} kept rows.")
@@ -192,6 +201,9 @@ def _ingest_parquet(settings: Settings, max_comments: int | None, rate: float, t
     from concurrent.futures import ThreadPoolExecutor
     print(f"Reading {len(pending):,}/{len(shards):,} parquet shards from {settings.hf_dataset} [{settings.hf_split}]")
     t0 = time.time()
+    from .source_info import split_size
+    advertised_size = split_size(settings)
+    mismatch_warned = False
     def download(filename):
         return filename, hf_hub_download(settings.hf_dataset, filename, repo_type="dataset", local_dir=str(download_dir))
 
@@ -207,12 +219,15 @@ def _ingest_parquet(settings: Settings, max_comments: int | None, rate: float, t
             try:
                 parquet = pq.ParquetFile(local_path)
                 capped = False
+                shard_rows = int(parquet.metadata.num_rows)
+                shard_scanned = 0
                 for batch in parquet.iter_batches(columns=["id", "link_id", "parent_id", "author", "body", "score", "created_utc"], batch_size=100_000):
                     buf = []
                     for row in batch.to_pylist():
                         if max_comments and consumed >= max_comments:
                             capped = True; break
                         consumed += 1
+                        shard_scanned += 1
                         row_tuple = _row_to_tuple(row)
                         if row_tuple:
                             link = row_tuple[1]
@@ -224,9 +239,13 @@ def _ingest_parquet(settings: Settings, max_comments: int | None, rate: float, t
                     kept_total = con.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
                     set_state(con, "ingest_parquet_consumed", str(consumed)); con.commit()
                     elapsed = max(time.time() - t0, 1e-6)
-                    speed = consumed / elapsed
-                    eta = max(0, len(pending) - 1) * max(parquet.metadata.num_rows, 1) / max(speed, 1)
-                    print(f"  scanned {consumed:,} ({speed:,.0f} rows/s, ETA ~{eta/60:,.1f} min) | kept {kept_total:,}")
+                    speed = _session_rate(consumed, session_start, elapsed)
+                    remaining = max(0, shard_rows - shard_scanned)
+                    eta = remaining / max(speed, 1)
+                    if advertised_size and consumed > advertised_size and not mismatch_warned:
+                        print("WARNING: dataset metadata count looks stale")
+                        mismatch_warned = True
+                    print(f"  scanned {consumed:,} (shard {shard_scanned:,}/{shard_rows:,}; {speed:,.0f} rows/s; shard ETA ~{eta/60:,.1f} min) | kept {kept_total:,}")
                     if target_rows and kept_total >= target_rows:
                         capped = True
                     if capped:
@@ -252,7 +271,24 @@ def _ingest_parquet(settings: Settings, max_comments: int | None, rate: float, t
     n = con.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
     threads = con.execute("SELECT COUNT(DISTINCT link_id) FROM comments").fetchone()[0]
     print(f"Done: {n:,} comments across {threads:,} threads stored in {settings.db_path}")
+    print_ingest_state(con)
     return True
+
+
+def _session_rate(consumed: int, session_start: int, elapsed: float) -> float:
+    return max(0, consumed - session_start) / max(elapsed, 1)
+
+
+def print_ingest_state(con) -> None:
+    complete = get_state(con, "ingest_complete") == "1"
+    scanned = max(int(get_state(con, key, "0") or 0) for key in ("ingest_consumed", "ingest_parquet_consumed"))
+    sample_rate = get_state(con, "ingest_sample_rate", "unknown")
+    comments = con.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
+    print("Ingest state:")
+    print(f"  complete: {'yes' if complete else 'no'}")
+    print(f"  rows scanned: {scanned:,}")
+    print(f"  sample rate: {sample_rate}")
+    print(f"  comments stored: {comments:,}")
 
 
 def _flush(con, buf, consumed, seen) -> int:

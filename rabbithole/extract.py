@@ -196,11 +196,34 @@ def import_v1_jsonl(settings: Settings, path: str, cfg: ExtractConfig | None = N
     print(f"v1 import: {total:,} rows read, {kept:,} passed filters, {n:,} unique after dedupe")
 
 
-def corpus_stats(settings: Settings) -> None:
-    con = connect(settings.db_path)
+def corpus_stats(settings: Settings, artifacts: bool = False) -> None:
+    from .db import get_state
+    if settings.db_path.exists():
+        con = connect(settings.db_path)
+        ingest_complete = get_state(con, "ingest_complete") == "1"
+        rows_scanned = max(int(get_state(con, key, "0") or 0) for key in ("ingest_consumed", "ingest_parquet_consumed"))
+        sample_rate = get_state(con, "ingest_sample_rate", "unknown") or "unknown"
+        comments_stored = con.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
+    else:
+        con = None
+        ingest_complete, rows_scanned, sample_rate, comments_stored = False, "0", "unknown", 0
+    print("ingest state:")
+    print(f"  complete: {'yes' if ingest_complete else 'no'}")
+    print(f"  rows scanned: {rows_scanned:,}")
+    print(f"  sample rate: {sample_rate}")
+    print(f"  comments stored: {comments_stored:,}")
+    if con is None:
+        if artifacts:
+            _artifact_year_stats(settings)
+        else:
+            print("Pipeline database unavailable; use stats --artifacts for artifact year statistics.")
+        return
     n = con.execute("SELECT COUNT(*) FROM pairs").fetchone()[0]
     print(f"pairs: {n:,}")
     if not n:
+        con.close()
+        if artifacts:
+            _artifact_year_stats(settings)
         return
     print("threads:", con.execute("SELECT COUNT(DISTINCT thread_id) FROM pairs").fetchone()[0])
     from datetime import datetime, timezone
@@ -222,3 +245,29 @@ def corpus_stats(settings: Settings) -> None:
     print("answer chars p10/p50/p90/max:", lens[n // 10], lens[n // 2], lens[9 * n // 10], lens[-1])
     top = con.execute("SELECT title, COUNT(*) c FROM pairs GROUP BY thread_id ORDER BY c DESC LIMIT 3").fetchall()
     print("biggest threads:", [(t[:40], c) for t, c in top])
+
+
+def _artifact_year_stats(settings: Settings) -> None:
+    import sqlite3
+    from datetime import datetime, timezone
+    path = settings.artifacts_dir / "corpus.db"
+    if not path.exists():
+        print(f"Artifact corpus database not found: {path}")
+        return
+    con = sqlite3.connect(str(path))
+    columns = {row[1] for row in con.execute("PRAGMA table_info(docs)")}
+    if "created_utc" not in columns:
+        print("Artifact corpus database has no created_utc column; rebuild the index for year statistics.")
+        con.close()
+        return
+    values = [int(row[0]) for row in con.execute("SELECT created_utc FROM docs WHERE created_utc > 0")]
+    con.close()
+    years = [datetime.fromtimestamp(v, tz=timezone.utc).year for v in values]
+    if not years:
+        print("No artifact document dates are available.")
+        return
+    from collections import Counter
+    print(f"artifact pair years: {min(years)}-{max(years)}")
+    print("artifact year histogram:")
+    for year, count in sorted(Counter(years).items()):
+        print(f"  {year}: {count:,}")

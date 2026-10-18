@@ -17,7 +17,7 @@ from .embed import Embedder
 from .text import truncate_sentences
 
 DOC_COLUMNS = (
-    "idx INTEGER PRIMARY KEY, thread_id TEXT, title TEXT, context TEXT, category TEXT, question TEXT, answer TEXT, "
+    "idx INTEGER PRIMARY KEY, thread_id TEXT, title TEXT, context TEXT, category TEXT, question TEXT, answer TEXT, created_utc INTEGER, "
     "question_id TEXT, answer_id TEXT, answer_score INTEGER, source_url TEXT, op_author TEXT"
 )
 
@@ -100,10 +100,10 @@ def build_index(settings: Settings, embedder: Embedder, limit: int | None = None
             thread_codes[idx] = thread_map.setdefault(r["thread_id"], len(thread_map))
             bm25_docs.append(bm25_text(r["title"] or "", r["question"], r["answer"]))
             docs.append(
-                (idx, r["thread_id"], r["title"], r["context"], r["category"], r["question"], r["answer"],
+                (idx, r["thread_id"], r["title"], r["context"], r["category"], r["question"], r["answer"], r["created_utc"],
                  r["question_id"], r["answer_id"], r["answer_score"], r["source_url"], r["op_author"])
             )
-        store.executemany("INSERT INTO docs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", docs)
+        store.executemany("INSERT INTO docs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", docs)
         i += len(rows)
         if (i // B) % 10 == 0 or i == n:
             rate = i / max(time.time() - t0, 1e-6)

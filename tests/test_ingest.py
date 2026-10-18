@@ -107,6 +107,31 @@ def test_resume_after_cap_continues(tmp_path, fake_datasets):
     assert count(s) == 4000
 
 
+def test_stream_rate_uses_current_session_after_resume(tmp_path, fake_datasets, monkeypatch, capsys):
+    from rabbithole.ingest import _session_rate
+    assert _session_rate(1500, 1000, 1) == 500
+    s = settings(tmp_path)
+    con = connect(s.db_path)
+    from rabbithole.db import set_state
+    set_state(con, "ingest_consumed", "1000")
+    set_state(con, "ingest_sample_rate", "1.0")
+    con.commit()
+    monkeypatch.setattr("rabbithole.ingest.time.time", lambda: 100.0)
+    ingest(s, batch_size=500, method="stream")
+    out = capsys.readouterr().out
+    assert "scanned 1,500 rows (500/s)" in out
+
+
+def test_stream_metadata_mismatch_warns_once_but_completes_only_at_eof(tmp_path, fake_datasets, monkeypatch, capsys):
+    monkeypatch.setattr("rabbithole.source_info.split_size", lambda settings: 3000)
+    s = settings(tmp_path)
+    ingest(s, batch_size=500, method="stream")
+    out = capsys.readouterr().out
+    assert out.count("dataset metadata count looks stale") == 1
+    assert get_state(connect(s.db_path), "ingest_complete") == "1"
+    assert "complete: yes" in out
+
+
 def test_rate_mismatch_on_resume_is_refused(tmp_path, fake_datasets):
     s = settings(tmp_path)
     ingest(s, batch_size=500, thread_sample_rate=0.5, max_comments=1000, method="stream")

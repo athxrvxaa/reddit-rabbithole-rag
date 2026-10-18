@@ -5,6 +5,12 @@ from pathlib import Path
 
 # embeddings.npy is only needed to re-index; the FAISS index already holds the vectors.
 REQUIRED = ["manifest.json", "faiss.index", "corpus.db", "cat_ids.npy", "thread_codes.npy"]
+
+
+def manifest_year_text(manifest: dict) -> str:
+    """Return the optional year label; older manifests remain valid."""
+    lo, hi = manifest.get("min_year"), manifest.get("max_year")
+    return f" · threads from {lo}-{hi}" if lo is not None and hi is not None else ""
 APP_PATTERNS = REQUIRED + ["bm25/*"]
 
 
