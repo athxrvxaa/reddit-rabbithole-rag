@@ -1,4 +1,4 @@
-﻿# Reddit RabbitHole RAG
+# Reddit RabbitHole RAG
 
 Ask a question and get an answer cited from Reddit r/IAmA threads. Claims link to the original comment. AMA posts are personal anecdotes, not verified facts or professional advice.
 
@@ -74,10 +74,32 @@ python -m rabbithole search "What is the hardest part of being a nurse?"
 
 Parquet ingest resumes by completed shard; streaming is the fallback. Both methods use deterministic whole-thread sampling. Keep the same `--thread-sample-rate` when resuming. The source is time-ordered, so interrupting an early scan leaves only its oldest slice. See [docs/KAGGLE.md](docs/KAGGLE.md) for checkpointing and the Kaggle workflow.
 
-`stats` reports years from the corpus DB. Artifacts built before `created_utc` was added have no year bounds; year coverage for those artifacts needs a rebuild. Build 2 scanned about 26.2M rows, more than the metadata count, and was interrupted before a completion marker, so full-timeline coverage is unconfirmed. **TODO(after stats): exact year range.**
+`stats` reports years from the pipeline corpus DB. If that large DB is unavailable, `python -m rabbithole stats --artifacts` reads the year histogram from the artifact corpus DB. Artifacts built before `created_utc` was added have no year bounds; year coverage for those artifacts needs a rebuild. Build 2 scanned about 26.2M rows, more than the metadata count, and was interrupted before a completion marker, so full-timeline coverage is unconfirmed. **TODO(after stats): exact year range.**
+
+## Evaluation and Gemini quota handling
+
+```bash
+python -m rabbithole eval-make -n 200 --sleep 6.5 --model gemini-flash-lite-latest
+python -m rabbithole eval-retrieval
+python -m rabbithole eval-retrieval --reranker cross-encoder/ms-marco-MiniLM-L-12-v2
+python -m rabbithole eval-retrieval --reranker BAAI/bge-reranker-base --sweep
+python -m rabbithole calibrate
+python -m rabbithole eval-generation --judge --judge-model gemini-flash-lite-latest
+```
+
+`eval-make` appends to its output and skips answer ids already saved, so it can resume across runs. After an index rebuild, delete or regenerate the query file to avoid mixing old and current examples. It warns when fewer than 200 eligible source rows exist. `--sleep` sets the request delay; `--model` selects the query-generation model. `eval-generation` supports `--limit`, `--sleep`, and `--judge-model`, saves partial rows on quota exhaustion, and reports completed query count.
+
+Gemini 429 responses are inspected for minute/day quota details. Per-minute quota waits for the reported retry delay (capped at 60 seconds); daily quota and exhausted retries move immediately to the next model. If all configured models run out of quota, the client raises `GeminiQuotaError`. Default `GEMINI_FALLBACK_MODELS` is `gemini-2.5-flash,gemini-flash-lite-latest`.
+
+Retrieval evaluation reports n and 95% intervals for Recall@k and MRR, saves per-query ranks to `eval/results/retrieval_per_query.jsonl`, and warns when intervals overlap. `--reranker NAME` can be repeated to compare models. `--sweep` compares dense RRF weights 1, 1.5, 2, and 3 against `RR_RERANK_N` values 30, 50, and 100; it leaves defaults unchanged. Results at this preliminary scale should not guide configuration decisions; use at least 300 queries.
+
+RRF settings are `RR_RRF_DENSE_WEIGHT` and `RR_RRF_BM25_WEIGHT` (both default `1.0`). Other retrieval settings and model ids are in `rabbithole/config.py` and `.env.example`.
+
 
 ## Evaluation and limitations
 
-Generation quality has not been evaluated end to end because Gemini quota errors stopped query generation and generation evaluation. The current retrieval table is Build 1 only. Categories are keyword heuristics; many pairs can be classified as `other`. AMA posts are personal anecdotes, not verified claims or professional advice. The corpus contains sensitive topics, including abuse, addiction, and self-harm.
+Generation quality has not been evaluated end to end because Gemini free-tier quota errors stopped `eval-make`/`eval-generation` in the completed run. The current retrieval table is Build 1 only. Categories are keyword heuristics; many pairs can be classified as `other`. AMA posts are personal anecdotes, not verified claims or professional advice. The corpus contains sensitive topics, including abuse, addiction, and self-harm.
 
-See [docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md) for the architecture and interview guide, and [notebooks/kaggle_run.ipynb](notebooks/kaggle_run.ipynb) for the Kaggle notebook template.
+## Project guide and Kaggle workflow
+
+See the [architecture and interview guide](docs/PROJECT_GUIDE.md) for module details, design trade-offs, evaluation provenance, and interview preparation. The [Kaggle notebook template](notebooks/kaggle_run.ipynb) and [Kaggle runbook](docs/KAGGLE.md) describe the data-building workflow.
