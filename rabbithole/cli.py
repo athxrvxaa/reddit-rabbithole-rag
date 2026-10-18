@@ -61,6 +61,8 @@ def _p() -> argparse.ArgumentParser:
     s = sub.add_parser("eval-retrieval", help="ablation table: bm25 vs dense vs hybrid vs hybrid+rerank")
     s.add_argument("--queries", default="eval/synthetic_queries.jsonl")
     s.add_argument("--no-rerank", action="store_true")
+    s.add_argument("--reranker", action="append", default=None, help="reranker model id; may be repeated for comparisons")
+    s.add_argument("--sweep", action="store_true", help="sweep RRF dense weight and rerank candidate count")
 
     s = sub.add_parser("calibrate", help="pick the abstain threshold from in-domain vs out-of-domain queries")
     s.add_argument("--seed", default="eval/seed_queries.json")
@@ -143,16 +145,59 @@ def main(argv: list[str] | None = None) -> None:
         llm = GeminiClient(s.gemini_api_key, a.model, s.gemini_fallbacks) if a.model else GeminiClient.from_settings(s)
         make_synthetic_queries(s.artifacts_dir, llm, a.n, Path(a.out), sleep=a.sleep)
     elif c == "eval-retrieval":
-        from .eval import eval_retrieval, load_jsonl, results_markdown
+        from .eval import eval_retrieval, intervals_overlap, load_jsonl, results_markdown
         from .pipeline import load_retriever
         qs = load_jsonl(Path(a.queries))
-        res = eval_retrieval(load_retriever(s, use_reranker=not a.no_rerank), qs)
-        md = results_markdown(res)
-        print(md)
         out = Path("eval/results"); out.mkdir(parents=True, exist_ok=True)
-        (out / "retrieval.json").write_text(json.dumps(res, indent=2))
-        (out / "retrieval.md").write_text(md + f"\n\n_n = {len(qs)} synthetic queries_\n")
-        print(f"\nSaved to {out}/retrieval.md")
+        names = a.reranker or [None]
+        all_per_query = []
+        base_retriever = None
+        for name in names:
+            reranker = None
+            if name:
+                if a.no_rerank:
+                    raise SystemExit("--reranker cannot be combined with --no-rerank")
+                from .embed import CrossEncoderReranker
+                reranker = CrossEncoderReranker(name)
+            retriever = load_retriever(s, reranker=reranker, use_reranker=not a.no_rerank)
+            if base_retriever is None:
+                base_retriever = retriever
+            res = eval_retrieval(retriever, qs)
+            md = results_markdown(res)
+            metric_names = [f"recall@{k}" for k in (1, 5, 10, 20)] + ["mrr@20"]
+            overlap = any(intervals_overlap(res, metric) for metric in metric_names)
+            if overlap:
+                md += "\n\nIntervals overlap; this sample does not support declaring a winner."
+            slug = name.replace("/", "--") if name else "default"
+            stem = "retrieval" if not name else f"retrieval_{slug}"
+            serializable = {mode: {k: v for k, v in val.items() if k != "per_query"} for mode, val in res.items()}
+            (out / f"{stem}.json").write_text(json.dumps(serializable, indent=2))
+            (out / f"{stem}.md").write_text(md + f"\n\n_n = {len(qs)} queries; 95% intervals shown_\n")
+            for mode, val in res.items():
+                all_per_query.extend({**row, "reranker": name or s.reranker_model} for row in val["per_query"])
+            print(md)
+            if overlap:
+                print("Intervals overlap; no winner is declared.")
+        (out / "retrieval_per_query.jsonl").write_text("".join(json.dumps(row) + "\n" for row in all_per_query))
+        print(f"\nSaved per-query ranks to {out}/retrieval_per_query.jsonl")
+        if a.sweep:
+            if base_retriever is None or base_retriever.reranker is None:
+                raise SystemExit("--sweep needs an active cross-encoder reranker.")
+            sweep = []
+            original_weight = s.rrf_dense_weight
+            original_n = s.rerank_candidates
+            for weight in (1.0, 1.5, 2.0, 3.0):
+                for candidate_n in (30, 50, 100):
+                    s.rrf_dense_weight, s.rerank_candidates = weight, candidate_n
+                    result = eval_retrieval(base_retriever, qs, modes=["hybrid_rerank"])["hybrid_rerank"]
+                    sweep.append({"dense_weight": weight, "bm25_weight": s.rrf_bm25_weight,
+                                  "rerank_n": candidate_n, **{k: v for k, v in result.items() if k != "per_query"}})
+            s.rrf_dense_weight, s.rerank_candidates = original_weight, original_n
+            print("\nSweep (exploratory; decisions need n >= 300)")
+            print("dense_weight | rerank_n | R@5 | MRR@20")
+            for row in sweep:
+                print(f"{row['dense_weight']:12.1f} | {row['rerank_n']:9d} | {row['recall@5']:.3f} | {row['mrr@20']:.3f}")
+            (out / "retrieval_sweep.json").write_text(json.dumps(sweep, indent=2))
     elif c == "calibrate":
         from .eval import calibrate
         from .pipeline import load_retriever

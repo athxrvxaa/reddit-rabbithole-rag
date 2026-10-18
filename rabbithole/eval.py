@@ -7,6 +7,7 @@ import re
 import sqlite3
 import statistics
 import time
+import math
 from pathlib import Path
 
 from .generation import GeminiClient, GeminiQuotaError
@@ -71,6 +72,25 @@ def load_jsonl(path: Path) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- retrieval ablation
+def wilson_interval(successes: int, n: int, z: float = 1.959963984540054) -> tuple[float, float]:
+    if n <= 0:
+        return (0.0, 0.0)
+    p = successes / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    radius = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return max(0.0, center - radius), min(1.0, center + radius)
+
+
+def _bootstrap_mean_interval(values: list[float], seed: int = 0, iterations: int = 2000) -> tuple[float, float]:
+    if not values:
+        return (0.0, 0.0)
+    rng = random.Random(seed)
+    n = len(values)
+    means = sorted(sum(values[rng.randrange(n)] for _ in range(n)) / n for _ in range(iterations))
+    return means[int(.025 * iterations)], means[min(iterations - 1, int(.975 * iterations))]
+
+
 def eval_retrieval(retriever: Retriever, queries: list[dict], modes: list[str] | None = None, ks=(1, 5, 10, 20)) -> dict:
     modes = [m for m in (modes or list(MODES)) if m != "hybrid_rerank" or retriever.reranker is not None]
     kmax = max(ks)
@@ -80,7 +100,8 @@ def eval_retrieval(retriever: Retriever, queries: list[dict], modes: list[str] |
         hit_thread = {k: 0 for k in ks}
         rr = []
         lat = []
-        for q in queries:
+        per_query = []
+        for qi, q in enumerate(queries):
             res = retriever.search(q["query"], top_k=kmax, mode=mode, per_thread=0)
             lat.append(res.timings["total_ms"])
             pair_rank = thread_rank = None
@@ -90,11 +111,14 @@ def eval_retrieval(retriever: Retriever, queries: list[dict], modes: list[str] |
                 if thread_rank is None and h.doc["thread_id"] == q["thread_id"]:
                     thread_rank = rank
             rr.append(1.0 / pair_rank if pair_rank else 0.0)
+            per_query.append({"mode": mode, "query_index": qi, "query": q["query"], "expected_idx": q["idx"],
+                              "expected_thread_id": q["thread_id"], "pair_rank": pair_rank,
+                              "thread_rank": thread_rank, "reciprocal_rank": rr[-1], "latency_ms": lat[-1]})
             for k in ks:
                 hit_pair[k] += bool(pair_rank and pair_rank <= k)
                 hit_thread[k] += bool(thread_rank and thread_rank <= k)
         n = len(queries)
-        results[mode] = {
+        metric = {
             "n": n,
             **{f"recall@{k}": hit_pair[k] / n for k in ks},
             **{f"thread_recall@{k}": hit_thread[k] / n for k in ks},
@@ -102,21 +126,38 @@ def eval_retrieval(retriever: Retriever, queries: list[dict], modes: list[str] |
             "latency_ms_mean": statistics.mean(lat),
             "latency_ms_p95": sorted(lat)[int(0.95 * (len(lat) - 1))],
         }
+        for k in ks:
+            metric[f"recall@{k}_ci95"] = wilson_interval(hit_pair[k], n)
+            metric[f"thread_recall@{k}_ci95"] = wilson_interval(hit_thread[k], n)
+        metric[f"mrr@{kmax}_ci95"] = _bootstrap_mean_interval(rr)
+        metric["per_query"] = per_query
+        results[mode] = metric
     return results
 
 
 def results_markdown(results: dict, ks=(1, 5, 10, 20)) -> str:
     kmax = max(ks)
-    head = "| Mode | " + " | ".join(f"R@{k}" for k in ks) + f" | MRR@{kmax} | Thread R@5 | Latency ms (mean / p95) |"
-    sep = "|" + "---|" * (len(ks) + 4)
+    head = "| Mode | n | " + " | ".join(f"R@{k} (95% CI)" for k in ks) + f" | MRR@{kmax} (95% CI) | Thread R@5 (95% CI) | Latency ms (mean / p95) |"
+    sep = "|" + "---|" * (len(ks) + 5)
     rows = [head, sep]
     for mode, m in results.items():
-        cells = " | ".join(f"{m[f'recall@{k}']:.3f}" for k in ks)
+        cells = " | ".join(f"{m[f'recall@{k}']:.3f} [{m[f'recall@{k}_ci95'][0]:.3f}, {m[f'recall@{k}_ci95'][1]:.3f}]" for k in ks)
+        mrr_ci = m[f"mrr@{kmax}_ci95"]
         rows.append(
-            f"| {mode} | {cells} | {m[f'mrr@{kmax}']:.3f} | {m.get('thread_recall@5', 0):.3f} | "
+            f"| {mode} | {m['n']} | {cells} | {m[f'mrr@{kmax}']:.3f} [{mrr_ci[0]:.3f}, {mrr_ci[1]:.3f}] | "
+            f"{m.get('thread_recall@5', 0):.3f} [{m.get('thread_recall@5_ci95', (0, 0))[0]:.3f}, {m.get('thread_recall@5_ci95', (0, 0))[1]:.3f}] | "
             f"{m['latency_ms_mean']:.0f} / {m['latency_ms_p95']:.0f} |"
         )
     return "\n".join(rows)
+
+
+def intervals_overlap(results: dict, metric: str) -> bool:
+    rows = [(m.get(f"{metric}_ci95"), mode) for mode, m in results.items() if f"{metric}_ci95" in m]
+    for i, (a, _) in enumerate(rows):
+        for b, _ in rows[i + 1:]:
+            if max(a[0], b[0]) <= min(a[1], b[1]):
+                return True
+    return False
 
 
 # --------------------------------------------------------------------------- abstain calibration

@@ -125,7 +125,8 @@ class Retriever:
         elif mode == "dense":
             ranking = dense
         else:
-            ranking = rrf_fuse([[i for i, _ in dense], [i for i, _ in bm]], k=s.rrf_k)
+            ranking = rrf_fuse([[i for i, _ in dense], [i for i, _ in bm]],
+                               weights=[s.rrf_dense_weight, s.rrf_bm25_weight], k=s.rrf_k)
         if cid is not None:
             ranking = [(i, sc) for i, sc in ranking if self.cat_ids[i] == cid]
 

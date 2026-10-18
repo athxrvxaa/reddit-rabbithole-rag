@@ -66,6 +66,8 @@ class Settings:
     rerank_candidates: int = field(default_factory=lambda: int(_env("RR_RERANK_N", "30")))
     per_thread: int = field(default_factory=lambda: int(_env("RR_PER_THREAD", "2")))  # max hits per AMA
     rrf_k: int = 60
+    rrf_dense_weight: float = field(default_factory=lambda: float(_env("RR_RRF_DENSE_WEIGHT", "1.0")))
+    rrf_bm25_weight: float = field(default_factory=lambda: float(_env("RR_RRF_BM25_WEIGHT", "1.0")))
     # Reranker scores are model-specific; calibrate both tiers for each reranker.
     abstain_threshold: float | None = field(default_factory=lambda: _env_float("RR_ABSTAIN_THRESHOLD", -5.0))
     lowconf_threshold: float | None = field(default_factory=lambda: _env_float("RR_LOWCONF_THRESHOLD", -1.0))
