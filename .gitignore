@@ -6,6 +6,8 @@ __pycache__/
 .pytest_cache/
 .ipynb_checkpoints/
 .cache/
+notebooks/*done*.ipynb
+notebooks/*(*).ipynb
 
 # Local data and generated artifacts
 data/
