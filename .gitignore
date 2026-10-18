@@ -12,6 +12,7 @@ outputs.zip
 
 # secrets
 .env
+.env.example
 *.key
 
 # python
