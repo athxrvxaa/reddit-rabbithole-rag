@@ -1,0 +1,8 @@
+[project]
+name = "reddit-rabbithole-rag"
+version = "2.0.0"
+description = "Reddit AMA RAG: hybrid retrieval + rerank + cited generation, built to scale"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

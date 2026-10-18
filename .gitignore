@@ -1,0 +1,23 @@
+# data + build outputs (large, rebuilt by the pipeline)
+data/
+artifacts/
+eval/results/*
+!eval/results/.gitkeep
+*.db
+*.npy
+*.index
+*.bin
+*.pkl
+outputs.zip
+
+# secrets
+.env
+*.key
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
