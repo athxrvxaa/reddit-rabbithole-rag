@@ -26,7 +26,11 @@ class STEmbedder:
         if fp16 and str(self.model.device).startswith("cuda"):
             self.model.half()
         self.query_prefix = query_prefix
-        self.dim = int(self.model.get_sentence_embedding_dimension())
+        get_dim = getattr(self.model, "get_embedding_dimension", None)
+        dim = get_dim() if callable(get_dim) else None
+        if dim is None:
+            dim = self.model.get_sentence_embedding_dimension()
+        self.dim = int(dim)
         self.model_name = model_name
 
     def encode_docs(self, texts, batch_size=128, show_progress=False):
