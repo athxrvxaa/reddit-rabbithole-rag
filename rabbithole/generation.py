@@ -31,6 +31,38 @@ class GeminiError(RuntimeError):
     pass
 
 
+class GeminiQuotaError(GeminiError):
+    """All configured Gemini models are blocked by quota or exhausted retries."""
+
+
+def _quota_info(response) -> tuple[str | None, float | None]:
+    """Return quota period and RetryInfo delay from a Gemini 429 response."""
+    try:
+        payload = response.json()
+    except (ValueError, AttributeError):
+        try:
+            payload = json.loads(response.text)
+        except (ValueError, TypeError):
+            payload = {}
+    details = payload.get("error", {}).get("details", [])
+    period = None
+    delay = None
+    for item in details:
+        typ = item.get("@type", "")
+        if "RetryInfo" in typ:
+            raw = item.get("retryDelay", "")
+            match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)s\s*", str(raw))
+            if match:
+                delay = float(match.group(1))
+        if "QuotaFailure" in typ:
+            ids = " ".join(str(v.get("quotaId", "")) for v in item.get("violations", []))
+            if "PerDay" in ids:
+                period = "day"
+            elif "PerMinute" in ids:
+                period = "minute"
+    return period, delay
+
+
 class GeminiClient:
     def __init__(self, api_key: str, model: str, fallbacks: list[str] | None = None, timeout: int = 60,
                  max_retries: int = 3, max_output_tokens: int = 2048, thinking_budget: int | None = 0,
@@ -70,6 +102,7 @@ class GeminiClient:
 
     def _request(self, prompt: str, system: str | None, temperature: float, stream: bool) -> requests.Response:
         last = ""
+        quota_models: list[str] = []
         for model in self.models:
             with_thinking = True
             for attempt in range(self.max_retries):
@@ -83,15 +116,25 @@ class GeminiClient:
                     self.active_model = model
                     return r
                 last = f"{r.status_code}: {r.text[:300]}"
+                if r.status_code == 429:
+                    period, retry_delay = _quota_info(r)
+                    quota_models.append(model)
+                    if period == "minute" and attempt + 1 < self.max_retries:
+                        time.sleep(min(60.0, retry_delay if retry_delay is not None else 60.0))
+                        continue
+                    # Daily quota and exhausted per-minute retries move directly to next model.
+                    break
                 if r.status_code == 404:  # model retired -> next model
                     break
                 if r.status_code == 400 and with_thinking and "think" in r.text.lower():
                     with_thinking = False  # this model rejects thinkingConfig; retry without
                     continue
-                if r.status_code in (429, 500, 502, 503, 504):
+                if r.status_code in (500, 502, 503, 504):
                     time.sleep(2 ** attempt * 2)
                     continue
                 raise GeminiError(last)
+        if quota_models:
+            raise GeminiQuotaError(f"Gemini quota exhausted for configured models ({', '.join(quota_models)}). Try again after quota resets or configure another model.")
         raise GeminiError(f"Gemini request failed ({', '.join(self.models)}): {last}")
 
     @staticmethod

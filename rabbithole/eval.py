@@ -9,7 +9,7 @@ import statistics
 import time
 from pathlib import Path
 
-from .generation import GeminiClient
+from .generation import GeminiClient, GeminiQuotaError
 from .retrieval import MODES, Retriever
 
 
@@ -23,21 +23,32 @@ Question: {q}
 Answer: {a}"""
 
 
-def make_synthetic_queries(artifacts_dir: Path, llm: GeminiClient, n: int, out_path: Path, seed: int = 0, sleep: float = 0.5) -> None:
+def make_synthetic_queries(artifacts_dir: Path, llm: GeminiClient, n: int, out_path: Path, seed: int = 0, sleep: float = 6.5) -> None:
     con = sqlite3.connect(str(Path(artifacts_dir) / "corpus.db"))
     con.row_factory = sqlite3.Row
     ids = [r[0] for r in con.execute("SELECT idx FROM docs WHERE LENGTH(answer) >= 250")]
     rng = random.Random(seed)
     rng.shuffle(ids)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    done = 0
-    with open(out_path, "w", encoding="utf-8") as f:
+    existing = load_jsonl(out_path) if out_path.exists() else []
+    done_ids = {int(row["idx"]) for row in existing if "idx" in row}
+    done = len(existing)
+    if len(ids) < 200:
+        print(f"Warning: only {len(ids)} eligible source queries exist (recommended: at least 200).")
+    quota_stopped = False
+    with open(out_path, "a", encoding="utf-8") as f:
         for idx in ids:
             if done >= n:
                 break
+            if idx in done_ids:
+                continue
             r = con.execute("SELECT * FROM docs WHERE idx=?", (idx,)).fetchone()
             try:
                 q = llm.generate(QGEN_PROMPT.format(q=r["question"][:400], a=r["answer"][:900]), temperature=0.7).strip()
+            except GeminiQuotaError as e:
+                print(f"Quota reached; saved progress and stopped: {e}")
+                quota_stopped = True
+                break
             except Exception as e:  # keep going on transient failures
                 print("  skip:", e)
                 continue
@@ -45,11 +56,14 @@ def make_synthetic_queries(artifacts_dir: Path, llm: GeminiClient, n: int, out_p
             if len(q) < 10:
                 continue
             f.write(json.dumps({"query": q, "idx": int(idx), "thread_id": r["thread_id"]}) + "\n")
+            f.flush()
             done += 1
+            done_ids.add(idx)
             if done % 25 == 0:
-                print(f"  {done}/{n} queries")
+                print(f"  {done}/{n} saved")
             time.sleep(sleep)
-    print(f"Wrote {done} synthetic queries -> {out_path}")
+    print(f"{done}/{n} saved" + (" (stopped at quota)" if quota_stopped else ""))
+    print(f"Queries saved -> {out_path}")
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -157,11 +171,19 @@ def judge_faithfulness(judge: GeminiClient, answer: str, hits) -> float | None:
         return None
 
 
-def eval_generation(pipeline, in_domain: list[str], ood: list[str], judge: GeminiClient | None = None, sleep: float = 0.5) -> dict:
+def eval_generation(pipeline, in_domain: list[str], ood: list[str], judge: GeminiClient | None = None, sleep: float = 0.5, limit: int | None = None) -> dict:
+    quota_error = None
     def run(qs):
+        nonlocal quota_error
         rows = []
-        for q in qs:
-            r = pipeline.ask(q)
+        if quota_error:
+            return rows
+        for q in qs[:limit] if limit is not None else qs:
+            try:
+                r = pipeline.ask(q)
+            except GeminiQuotaError as e:
+                quota_error = str(e)
+                break
             f = judge_faithfulness(judge, r.answer, r.search.hits) if judge and not r.citations.abstained else None
             rows.append(
                 {"query": q, "abstained": r.citations.abstained, "invalid_cites": len(r.citations.invalid),
@@ -169,6 +191,8 @@ def eval_generation(pipeline, in_domain: list[str], ood: list[str], judge: Gemin
                  "latency_ms": r.timings["retrieve_ms"] + r.timings["generate_ms"]}
             )
             time.sleep(sleep)
+        if quota_error:
+            return rows
         return rows
 
     a, b = run(in_domain), run(ood)
@@ -182,5 +206,6 @@ def eval_generation(pipeline, in_domain: list[str], ood: list[str], judge: Gemin
         "truncation_rate": mean([r["truncated"] for r in a]),
         "mean_faithfulness_judge": mean([r["faithfulness"] for r in answered if r["faithfulness"] is not None]),
         "mean_latency_ms": mean([r["latency_ms"] for r in a]),
+        "completed": len(a) + len(b), "quota_error": quota_error,
         "rows": {"in_domain": a, "ood": b},
     }

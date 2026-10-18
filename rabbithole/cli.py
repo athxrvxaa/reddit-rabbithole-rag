@@ -54,6 +54,8 @@ def _p() -> argparse.ArgumentParser:
     s = sub.add_parser("eval-make", help="generate a synthetic retrieval eval set with Gemini")
     s.add_argument("-n", type=int, default=200)
     s.add_argument("--out", default="eval/synthetic_queries.jsonl")
+    s.add_argument("--sleep", type=float, default=6.5)
+    s.add_argument("--model", default=None, help="override Gemini query generation model")
 
     s = sub.add_parser("eval-retrieval", help="ablation table: bm25 vs dense vs hybrid vs hybrid+rerank")
     s.add_argument("--queries", default="eval/synthetic_queries.jsonl")
@@ -66,6 +68,8 @@ def _p() -> argparse.ArgumentParser:
     s.add_argument("--seed", default="eval/seed_queries.json")
     s.add_argument("--judge", action="store_true", help="also run an LLM faithfulness judge")
     s.add_argument("--judge-model", default=None, help="use a different model than the generator for judging")
+    s.add_argument("--sleep", type=float, default=0.5)
+    s.add_argument("--limit", type=int, default=None)
 
     sub.add_parser("gemini-models", help="list Gemini models your API key can call")
 
@@ -134,7 +138,8 @@ def main(argv: list[str] | None = None) -> None:
     elif c == "eval-make":
         from .eval import make_synthetic_queries
         from .generation import GeminiClient
-        make_synthetic_queries(s.artifacts_dir, GeminiClient.from_settings(s), a.n, Path(a.out))
+        llm = GeminiClient(s.gemini_api_key, a.model, s.gemini_fallbacks) if a.model else GeminiClient.from_settings(s)
+        make_synthetic_queries(s.artifacts_dir, llm, a.n, Path(a.out), sleep=a.sleep)
     elif c == "eval-retrieval":
         from .eval import eval_retrieval, load_jsonl, results_markdown
         from .pipeline import load_retriever
@@ -168,7 +173,7 @@ def main(argv: list[str] | None = None) -> None:
             judge = GeminiClient.from_settings(s)
             if a.judge_model:
                 judge = GeminiClient(s.gemini_api_key, a.judge_model, s.gemini_fallbacks)
-        out = eval_generation(build_pipeline(s), seed["in_domain"], seed["out_of_domain"], judge)
+        out = eval_generation(build_pipeline(s), seed["in_domain"], seed["out_of_domain"], judge, sleep=a.sleep, limit=a.limit)
         rows = out.pop("rows")
         print(json.dumps(out, indent=2))
         Path("eval/results").mkdir(parents=True, exist_ok=True)
