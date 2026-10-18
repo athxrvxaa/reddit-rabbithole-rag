@@ -47,6 +47,6 @@ Build 2 resumed at row 6,220,000 with 915,905 comments already stored, sample ra
 
 Metadata requested 11,003 threads (10,952 found, 1 missing, 50 failed in one batch); total metadata threads were 20,607. Extraction saw 40,787 threads: 20,124 too small, 7,239 with no pairs, and 13,424 with pairs. It produced 200,181 unique pairs, all from submission authors, with a cap of 200 per thread. The index has 200,181 documents, dimension 384, took 277 seconds on a T4 (about 941 docs/s), and the public artifacts were 937 MB. The private 1.04 GB checkpoint was uploaded before metadata and extraction, so it held comments only.
 
-See [README.md](../README.md) for corpus, calibration, limitations, and the preliminary Build 1 retrieval table. For technical architecture and interview prep see [PROJECT_GUIDE.md](PROJECT_GUIDE.md).
+See [README.md](../README.md) for corpus, calibration, limitations, and the preliminary Build 1 retrieval table.
 
 429 handling waits on the provided retry delay for per-minute quotas (capped at 60 seconds), then tries the model again. Per-day quota and exhausted retry attempts move to the next fallback model. If all models are exhausted, the command receives `GeminiQuotaError` and the eval command preserves completed rows.

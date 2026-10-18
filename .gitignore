@@ -8,6 +8,7 @@ __pycache__/
 .cache/
 notebooks/*done*.ipynb
 notebooks/*(*).ipynb
+docs/PROJECT_GUIDE.md
 
 # Local data and generated artifacts
 data/

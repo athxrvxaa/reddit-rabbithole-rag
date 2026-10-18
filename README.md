@@ -100,6 +100,6 @@ RRF settings are `RR_RRF_DENSE_WEIGHT` and `RR_RRF_BM25_WEIGHT` (both default `1
 
 Generation quality has not been evaluated end to end because Gemini free-tier quota errors stopped `eval-make`/`eval-generation` in the completed run. The current retrieval table is Build 1 only. Categories are keyword heuristics; many pairs can be classified as `other`. AMA posts are personal anecdotes, not verified claims or professional advice. The corpus contains sensitive topics, including abuse, addiction, and self-harm.
 
-## Project guide and Kaggle workflow
+## Kaggle workflow
 
-See the [architecture and interview guide](docs/PROJECT_GUIDE.md) for module details, design trade-offs, evaluation provenance, and interview preparation. The [Kaggle notebook template](notebooks/kaggle_run.ipynb) and [Kaggle runbook](docs/KAGGLE.md) describe the data-building workflow.
+The [Kaggle notebook template](notebooks/kaggle_run.ipynb) and [Kaggle runbook](docs/KAGGLE.md) describe the data-building workflow.
