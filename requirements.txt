@@ -8,3 +8,5 @@ sentence-transformers>=3.0
 huggingface_hub>=0.24
 gradio>=4.44
 tqdm
+gradio
+requests
