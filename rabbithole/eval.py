@@ -118,18 +118,20 @@ def calibrate(retriever: Retriever, in_domain: list[str], ood: list[str]) -> dic
         return out
 
     a, b = top_scores(in_domain), top_scores(ood)
-    best = (-1.0, None)
-    for t in sorted(set(a + b)):
-        tpr = sum(x >= t for x in a) / len(a)
-        tnr = sum(x < t for x in b) / len(b)
-        bal = (tpr + tnr) / 2
-        if bal > best[0]:
-            best = (bal, t)
+    thresholds = sorted(set(a + b))
+    table = [{"threshold": t, "in_domain_pass_rate": sum(x >= t for x in a) / len(a),
+              "ood_abstain_rate": sum(x < t for x in b) / len(b)} for t in thresholds]
+    eligible = [row for row in table if row["in_domain_pass_rate"] >= .95]
+    suggested = max(eligible, key=lambda row: row["threshold"]) if eligible else None
     pct = lambda xs, p: sorted(xs)[int(p * (len(xs) - 1))]  # noqa: E731
     return {
         "in_domain_top_score": {"p10": pct(a, .1), "median": pct(a, .5), "p90": pct(a, .9)},
         "ood_top_score": {"p10": pct(b, .1), "median": pct(b, .5), "p90": pct(b, .9)},
-        "suggested_threshold": best[1], "balanced_accuracy": best[0], "n_in": len(a), "n_ood": len(b),
+        "reranker": getattr(retriever.reranker, "model_name", retriever.settings.reranker_model),
+        "threshold_table": table,
+        "suggested_threshold": suggested["threshold"] if suggested else None,
+        "suggested_ood_abstain_rate": suggested["ood_abstain_rate"] if suggested else None,
+        "n_in": len(a), "n_ood": len(b),
     }
 
 

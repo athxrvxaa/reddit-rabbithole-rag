@@ -57,7 +57,7 @@ def sources_html(hits) -> str:
     for i, h in enumerate(hits, 1):
         d = h.doc
         url = d["source_url"] if str(d.get("source_url", "")).startswith("https://") else "#"  # no javascript: links
-        rr = f" · rerank {h.rerank:.1f}" if h.rerank is not None else ""
+        rr = f" · rerank {h.rerank:.2f}" if h.rerank is not None else ""
         cards.append(
             f"""<div style="border:1px solid #8884;border-radius:10px;padding:12px;margin-bottom:10px;">
   <div style="font-size:12px;opacity:.7;">[{i}] {e(d['category'])}{rr} · score {d['answer_score']}</div>
@@ -94,6 +94,8 @@ def respond(query: str, top_k: int, category: str, request: gr.Request):
     search = PIPELINE.retrieve(query, top_k=int(top_k), category=cat)
     src = sources_html(search.hits)
     status = f"retrieved in {search.timings['total_ms']:.0f} ms"
+    if search.confidence == "low":
+        status += " · low confidence"
     yield "_Thinking…_", src, status
     try:
         text = ""

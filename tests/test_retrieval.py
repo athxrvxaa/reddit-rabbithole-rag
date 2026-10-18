@@ -73,5 +73,22 @@ def test_not_abstain_on_relevant(retriever):
     assert res.abstain is False
 
 
+def test_two_tier_confidence_gate(retriever):
+    # Query has a known score from the fake reranker; move tier boundaries around it.
+    res = retriever.search("what do inmates do all day in prison", top_k=1, mode="hybrid_rerank", per_thread=0)
+    score = res.hits[0].rerank
+    retriever.settings.abstain_threshold = score - 2
+    retriever.settings.lowconf_threshold = score + 1
+    low = retriever.search("what do inmates do all day in prison", top_k=1, mode="hybrid_rerank", per_thread=0)
+    assert low.confidence == "low" and not low.abstain
+    retriever.settings.abstain_threshold = score + 1
+    hard = retriever.search("what do inmates do all day in prison", top_k=1, mode="hybrid_rerank", per_thread=0)
+    assert hard.confidence == "none" and hard.abstain
+    retriever.settings.abstain_threshold = score - 2
+    retriever.settings.lowconf_threshold = score - 3
+    high = retriever.search("what do inmates do all day in prison", top_k=1, mode="hybrid_rerank", per_thread=0)
+    assert high.confidence == "high" and not high.abstain
+
+
 def test_empty_and_stopword_query(retriever):
     assert retriever.search("the of and", top_k=3, mode="bm25").hits == []

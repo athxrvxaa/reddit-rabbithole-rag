@@ -32,6 +32,7 @@ class SearchResult:
     mode: str
     hits: list[Hit]
     abstain: bool = False
+    confidence: str = "none"
     timings: dict = field(default_factory=dict)
 
 
@@ -167,7 +168,12 @@ class Retriever:
             if i in docs
         ]
         abstain = not hits
-        if mode_used == "hybrid_rerank" and hits and s.abstain_threshold is not None:
-            abstain = hits[0].rerank is not None and hits[0].rerank < s.abstain_threshold
+        confidence = "none" if not hits else "high"
+        if mode_used == "hybrid_rerank" and hits and hits[0].rerank is not None:
+            score = hits[0].rerank
+            if s.abstain_threshold is not None and score < s.abstain_threshold:
+                abstain, confidence = True, "none"
+            elif s.lowconf_threshold is not None and score < s.lowconf_threshold:
+                confidence = "low"
         timings["total_ms"] = (time.perf_counter() - t_all) * 1000
-        return SearchResult(query=query, mode=mode_used, hits=hits, abstain=abstain, timings=timings)
+        return SearchResult(query=query, mode=mode_used, hits=hits, abstain=abstain, confidence=confidence, timings=timings)

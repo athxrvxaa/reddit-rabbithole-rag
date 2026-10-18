@@ -112,14 +112,22 @@ def main(argv: list[str] | None = None) -> None:
         from .pipeline import load_retriever
         r = load_retriever(s, use_reranker=not a.no_rerank and a.mode == "hybrid_rerank")
         res = r.search(a.query, top_k=a.k, mode=a.mode)
-        print(f"mode={res.mode} abstain={res.abstain} timings={ {k: round(v) for k, v in res.timings.items()} }")
+        top_score = res.hits[0].rerank if res.hits else None
+        score_label = f"{top_score:.2f}" if top_score is not None else "n/a"
+        tier = "hard abstain" if res.abstain and top_score is not None else ("low confidence" if res.confidence == "low" else "high confidence")
+        print(f"mode={res.mode} abstain={res.abstain} top_rerank={score_label} tier={tier} timings={ {k: round(v) for k, v in res.timings.items()} }")
         for i, h in enumerate(res.hits, 1):
-            print(f"\n[{i}] score={h.score:.3f} rerank={h.rerank} dense#{h.dense_rank} bm25#{h.bm25_rank} | {h.doc['category']}")
+            print(f"\n[{i}] score={h.score:.2f} rerank={f'{h.rerank:.2f}' if h.rerank is not None else 'n/a'} dense#{h.dense_rank} bm25#{h.bm25_rank} | {h.doc['category']}")
             print(f"    {h.doc['title'][:90]}\n    Q: {h.doc['question'][:160]}\n    A: {h.doc['answer'][:240]}\n    {h.doc['source_url']}")
     elif c == "ask":
         from .pipeline import build_pipeline
         r = build_pipeline(s).ask(a.query, top_k=a.k)
+        score = r.search.hits[0].rerank if r.search.hits else None
+        tier = "hard abstain" if r.search.abstain and score is not None else ("low confidence" if r.search.confidence == "low" else "high confidence")
         print(r.answer, "\n")
+        print(f"top rerank: {score:.2f}" if score is not None else "top rerank: n/a", f"| tier: {tier}")
+        if r.search.confidence == "low":
+            print("Note: low confidence retrieval; answer may be less relevant.")
         print("citations:", r.citations)
         for i, h in enumerate(r.search.hits, 1):
             print(f"[{i}] {h.doc['title'][:80]}  {h.doc['source_url']}")
@@ -143,8 +151,13 @@ def main(argv: list[str] | None = None) -> None:
         from .pipeline import load_retriever
         seed = json.loads(Path(a.seed).read_text())
         out = calibrate(load_retriever(s), seed["in_domain"], seed["out_of_domain"])
+        out_dir = Path("eval/results"); out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "calibration.json").write_text(json.dumps(out, indent=2))
+        print("threshold | in-domain pass | OOD abstain")
+        for row in out["threshold_table"]:
+            print(f"{row['threshold']:9.2f} | {row['in_domain_pass_rate']:14.1%} | {row['ood_abstain_rate']:11.1%}")
         print(json.dumps(out, indent=2))
-        print(f"\nSet RR_ABSTAIN_THRESHOLD={out['suggested_threshold']} (small seed set: sanity-check before trusting).")
+        print(f"\nSuggested hard threshold: {out['suggested_threshold']} (OOD abstain rate {out['suggested_ood_abstain_rate']}); reranker-specific; see eval/results/calibration.json")
     elif c == "eval-generation":
         from .eval import eval_generation
         from .generation import GeminiClient

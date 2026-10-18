@@ -66,15 +66,15 @@ class Settings:
     rerank_candidates: int = field(default_factory=lambda: int(_env("RR_RERANK_N", "30")))
     per_thread: int = field(default_factory=lambda: int(_env("RR_PER_THREAD", "2")))  # max hits per AMA
     rrf_k: int = 60
-    # If the best cross-encoder score is below this, the app says "AMAs don't cover this".
-    # Uncalibrated default: run `python -m rabbithole calibrate` to pick a value for your corpus.
-    abstain_threshold: float | None = field(default_factory=lambda: _env_float("RR_ABSTAIN_THRESHOLD", -3.0))
+    # Reranker scores are model-specific; calibrate both tiers for each reranker.
+    abstain_threshold: float | None = field(default_factory=lambda: _env_float("RR_ABSTAIN_THRESHOLD", -5.0))
+    lowconf_threshold: float | None = field(default_factory=lambda: _env_float("RR_LOWCONF_THRESHOLD", -1.0))
 
     # generation
     gemini_api_key: str = field(default_factory=lambda: _env("GEMINI_API_KEY", ""))
     gemini_model: str = field(default_factory=lambda: _env("GEMINI_MODEL", "gemini-flash-latest"))
     gemini_fallbacks: list[str] = field(
-        default_factory=lambda: [m.strip() for m in _env("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash").split(",") if m.strip()]
+        default_factory=lambda: [m.strip() for m in _env("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash,gemini-flash-lite-latest").split(",") if m.strip()]
     )
     max_output_tokens: int = field(default_factory=lambda: int(_env("RR_MAX_OUT", "2048")))
 
