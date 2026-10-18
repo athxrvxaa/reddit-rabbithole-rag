@@ -216,6 +216,7 @@ def _ingest_parquet(settings: Settings, max_comments: int | None, rate: float, t
         while futures:
             future = futures.pop(0)
             filename, local_path = future.result()
+            parquet = None
             try:
                 parquet = pq.ParquetFile(local_path)
                 capped = False
@@ -257,6 +258,8 @@ def _ingest_parquet(settings: Settings, max_comments: int | None, rate: float, t
                 else:
                     break
             finally:
+                if parquet is not None:
+                    parquet.close()
                 try:
                     Path(local_path).unlink()
                 except FileNotFoundError:

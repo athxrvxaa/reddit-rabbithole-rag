@@ -182,6 +182,8 @@ def write_parquet(path, rows):
 
 def test_parquet_filtering_and_sampling_match_streaming(tmp_path, monkeypatch):
     import datetime
+    monkeypatch.setattr("rabbithole.source_info.split_size", lambda settings: None)
+    monkeypatch.setitem(sys.modules, "datasets", types.SimpleNamespace(load_dataset=lambda *a, **k: None))
     rows = make_rows(n_threads=30, per_thread=4)
     rows += [dict(id="deleted", link_id="t3_x", parent_id="t3_x", author="[deleted]", body="gone", score=0, created_utc=1),
              dict(id="removed", link_id="t3_y", parent_id="t3_y", author="user", body="[removed]", score=0, created_utc=1)]
@@ -203,6 +205,8 @@ def test_parquet_filtering_and_sampling_match_streaming(tmp_path, monkeypatch):
 
 
 def test_parquet_shard_resume_and_rate_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setattr("rabbithole.source_info.split_size", lambda settings: None)
+    monkeypatch.setitem(sys.modules, "datasets", types.SimpleNamespace(load_dataset=lambda *a, **k: None))
     rows = make_rows(n_threads=2, per_thread=3)
     p0, p1 = tmp_path / "s0.parquet", tmp_path / "s1.parquet"
     write_parquet(p0, rows[:3]); write_parquet(p1, rows[3:])
