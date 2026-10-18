@@ -169,9 +169,10 @@ class Retriever:
             if i in docs
         ]
         abstain = not hits
-        confidence = "none" if not hits else "high"
+        confidence = "none"
         if mode_used == "hybrid_rerank" and hits and hits[0].rerank is not None:
             score = hits[0].rerank
+            confidence = "high"
             if s.abstain_threshold is not None and score < s.abstain_threshold:
                 abstain, confidence = True, "none"
             elif s.lowconf_threshold is not None and score < s.lowconf_threshold:

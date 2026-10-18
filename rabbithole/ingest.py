@@ -141,13 +141,15 @@ def ingest(
 
 def _quiet_hf_progress() -> None:
     try:
-        from datasets.utils.logging import disable_progress_bar
+        from datasets.utils.logging import disable_progress_bar, set_verbosity_error
         disable_progress_bar()
+        set_verbosity_error()
     except (ImportError, AttributeError):
         pass
     try:
-        from huggingface_hub.utils import disable_progress_bars
+        from huggingface_hub.utils import disable_progress_bars, logging as hf_logging
         disable_progress_bars()
+        hf_logging.set_verbosity_error()
     except (ImportError, AttributeError):
         pass
 
@@ -223,7 +225,7 @@ def _ingest_parquet(settings: Settings, max_comments: int | None, rate: float, t
                     set_state(con, "ingest_parquet_consumed", str(consumed)); con.commit()
                     elapsed = max(time.time() - t0, 1e-6)
                     speed = consumed / elapsed
-                    eta = max(0, len(pending) - len(completed) - 1) * max(parquet.metadata.num_rows, 1) / max(speed, 1)
+                    eta = max(0, len(pending) - 1) * max(parquet.metadata.num_rows, 1) / max(speed, 1)
                     print(f"  scanned {consumed:,} ({speed:,.0f} rows/s, ETA ~{eta/60:,.1f} min) | kept {kept_total:,}")
                     if target_rows and kept_total >= target_rows:
                         capped = True
@@ -243,7 +245,7 @@ def _ingest_parquet(settings: Settings, max_comments: int | None, rate: float, t
             if next_index < len(pending):
                 futures.append(pool.submit(download, pending[next_index])); next_index += 1
     con.execute("CREATE INDEX IF NOT EXISTS idx_comments_link ON comments(link_id)")
-    all_done = len(completed) == len(shards)
+    all_done = all(filename in completed for filename in shards)
     if all_done:
         set_state(con, "ingest_complete", "1")
     con.commit()

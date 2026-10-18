@@ -65,13 +65,15 @@ def diagnose_rows(rows: list[dict]) -> dict:
 def inspect_source(settings: Settings, n: int = 20_000, target_rows: int = 5_000_000) -> None:
     from datasets import load_dataset
     try:
-        from datasets.utils.logging import disable_progress_bar
+        from datasets.utils.logging import disable_progress_bar, set_verbosity_error
         disable_progress_bar()
+        set_verbosity_error()
     except (ImportError, AttributeError):
         pass
     try:
-        from huggingface_hub.utils import disable_progress_bars
+        from huggingface_hub.utils import disable_progress_bars, logging as hf_logging
         disable_progress_bars()
+        hf_logging.set_verbosity_error()
     except (ImportError, AttributeError):
         pass
 

@@ -208,6 +208,8 @@ def judge_faithfulness(judge: GeminiClient, answer: str, hits) -> float | None:
         m = re.search(r"\{.*?\}", txt, re.S)
         d = json.loads(m.group(0))
         return d["supported"] / d["total"] if d["total"] else None
+    except GeminiQuotaError:
+        raise
     except Exception:
         return None
 
@@ -225,12 +227,18 @@ def eval_generation(pipeline, in_domain: list[str], ood: list[str], judge: Gemin
             except GeminiQuotaError as e:
                 quota_error = str(e)
                 break
-            f = judge_faithfulness(judge, r.answer, r.search.hits) if judge and not r.citations.abstained else None
+            try:
+                f = judge_faithfulness(judge, r.answer, r.search.hits) if judge and not r.citations.abstained else None
+            except GeminiQuotaError as e:
+                f = None
+                quota_error = str(e)
             rows.append(
                 {"query": q, "abstained": r.citations.abstained, "invalid_cites": len(r.citations.invalid),
                  "uncited_rate": r.citations.uncited_rate, "truncated": r.truncated, "faithfulness": f,
                  "latency_ms": r.timings["retrieve_ms"] + r.timings["generate_ms"]}
             )
+            if quota_error:
+                break
             time.sleep(sleep)
         if quota_error:
             return rows

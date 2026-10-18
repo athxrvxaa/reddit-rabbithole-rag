@@ -120,7 +120,9 @@ class GeminiClient:
                     period, retry_delay = _quota_info(r)
                     quota_models.append(model)
                     if period == "minute" and attempt + 1 < self.max_retries:
-                        time.sleep(min(60.0, retry_delay if retry_delay is not None else 60.0))
+                        wait = min(60.0, retry_delay if retry_delay is not None else 60.0)
+                        print(f"Gemini {model} per-minute quota; retrying in {wait:g}s.")
+                        time.sleep(wait)
                         continue
                     # Daily quota and exhausted per-minute retries move directly to next model.
                     break

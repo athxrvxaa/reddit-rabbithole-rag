@@ -70,7 +70,7 @@ def _p() -> argparse.ArgumentParser:
     s = sub.add_parser("eval-generation", help="citation/abstain/faithfulness checks on seed queries")
     s.add_argument("--seed", default="eval/seed_queries.json")
     s.add_argument("--judge", action="store_true", help="also run an LLM faithfulness judge")
-    s.add_argument("--judge-model", default=None, help="use a different model than the generator for judging")
+    s.add_argument("--judge-model", default="gemini-flash-lite-latest", help="model for the optional faithfulness judge")
     s.add_argument("--sleep", type=float, default=0.5)
     s.add_argument("--limit", type=int, default=None)
 
@@ -122,7 +122,9 @@ def main(argv: list[str] | None = None) -> None:
         res = r.search(a.query, top_k=a.k, mode=a.mode)
         top_score = res.hits[0].rerank if res.hits else None
         score_label = f"{top_score:.2f}" if top_score is not None else "n/a"
-        tier = "hard abstain" if res.abstain and top_score is not None else ("low confidence" if res.confidence == "low" else "high confidence")
+        tier = ("hard abstain" if res.abstain and top_score is not None else
+                "low confidence" if res.confidence == "low" else
+                "high confidence" if res.confidence == "high" else "not applied")
         print(f"mode={res.mode} abstain={res.abstain} top_rerank={score_label} tier={tier} timings={ {k: round(v) for k, v in res.timings.items()} }")
         for i, h in enumerate(res.hits, 1):
             print(f"\n[{i}] score={h.score:.2f} rerank={f'{h.rerank:.2f}' if h.rerank is not None else 'n/a'} dense#{h.dense_rank} bm25#{h.bm25_rank} | {h.doc['category']}")
@@ -131,7 +133,9 @@ def main(argv: list[str] | None = None) -> None:
         from .pipeline import build_pipeline
         r = build_pipeline(s).ask(a.query, top_k=a.k)
         score = r.search.hits[0].rerank if r.search.hits else None
-        tier = "hard abstain" if r.search.abstain and score is not None else ("low confidence" if r.search.confidence == "low" else "high confidence")
+        tier = ("hard abstain" if r.search.abstain and score is not None else
+                "low confidence" if r.search.confidence == "low" else
+                "high confidence" if r.search.confidence == "high" else "not applied")
         print(r.answer, "\n")
         print(f"top rerank: {score:.2f}" if score is not None else "top rerank: n/a", f"| tier: {tier}")
         if r.search.confidence == "low":
