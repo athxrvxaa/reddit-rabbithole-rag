@@ -1,0 +1,260 @@
+"""python -m rabbithole <command>  (see README for the full pipeline)."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from .config import get_settings
+
+
+def _p() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="rabbithole", description="Reddit RabbitHole RAG v2")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("ingest", help="stream HF IAmA comments into SQLite (resumable)")
+    s.add_argument("--max-comments", type=int, default=None, help="stop after SCANNING N rows (first-N slice)")
+    s.add_argument("--thread-sample-rate", type=float, default=1.0,
+                   help="keep this fraction of threads, whole threads only (e.g. 0.05 = 5%%)")
+    s.add_argument("--target-rows", type=int, default=None, help="stop once N rows have been kept")
+    s.add_argument("--method", choices=["parquet", "stream"], default="parquet", help="fast shard ingest or streaming fallback")
+
+    s = sub.add_parser("inspect-source", help="peek at the HF split: layout, size, suggested sample rate")
+    s.add_argument("-n", type=int, default=20_000)
+    s.add_argument("--target-rows", type=int, default=5_000_000)
+
+    s = sub.add_parser("meta", help="fetch submission author/title per thread (Arctic Shift)")
+    s.add_argument("--min-comments", type=int, default=None)
+
+    s = sub.add_parser("extract", help="build clean Q&A pairs from comment trees")
+    s.add_argument("--allow-heuristic-op", action="store_true", help="guess OP when metadata is missing (noisier)")
+    s.add_argument("--min-answer-score", type=int, default=1)
+    s.add_argument("--max-pairs-per-thread", type=int, default=200)
+
+    s = sub.add_parser("import-v1", help="re-clean the v1 jsonl into pairs (quick smoke test, no big download)")
+    s.add_argument("path")
+
+    sub.add_parser("stats", help="print corpus statistics")
+
+    s = sub.add_parser("index", help="build FAISS + BM25 + doc store artifacts")
+    s.add_argument("--embedder", choices=["st", "hash"], default="st", help="'hash' = fast fake embedder for smoke tests only")
+    s.add_argument("--limit", type=int, default=None)
+    s.add_argument("--faiss", choices=["auto", "flat", "hnsw"], default="auto")
+
+    s = sub.add_parser("search", help="retrieval only (no LLM) — good for debugging")
+    s.add_argument("query")
+    s.add_argument("-k", type=int, default=5)
+    s.add_argument("--mode", default="hybrid_rerank", choices=["bm25", "dense", "hybrid", "hybrid_rerank"])
+    s.add_argument("--no-rerank", action="store_true")
+
+    s = sub.add_parser("ask", help="full RAG answer in the terminal")
+    s.add_argument("query")
+    s.add_argument("-k", type=int, default=4)
+
+    s = sub.add_parser("eval-make", help="generate a synthetic retrieval eval set with Gemini")
+    s.add_argument("-n", type=int, default=200)
+    s.add_argument("--out", default="eval/synthetic_queries.jsonl")
+    s.add_argument("--sleep", type=float, default=6.5)
+    s.add_argument("--model", default=None, help="override Gemini query generation model")
+
+    s = sub.add_parser("eval-retrieval", help="ablation table: bm25 vs dense vs hybrid vs hybrid+rerank")
+    s.add_argument("--queries", default="eval/synthetic_queries.jsonl")
+    s.add_argument("--no-rerank", action="store_true")
+    s.add_argument("--reranker", action="append", default=None, help="reranker model id; may be repeated for comparisons")
+    s.add_argument("--sweep", action="store_true", help="sweep RRF dense weight and rerank candidate count")
+
+    s = sub.add_parser("calibrate", help="pick the abstain threshold from in-domain vs out-of-domain queries")
+    s.add_argument("--seed", default="eval/seed_queries.json")
+
+    s = sub.add_parser("eval-generation", help="citation/abstain/faithfulness checks on seed queries")
+    s.add_argument("--seed", default="eval/seed_queries.json")
+    s.add_argument("--judge", action="store_true", help="also run an LLM faithfulness judge")
+    s.add_argument("--judge-model", default="gemini-flash-lite-latest", help="model for the optional faithfulness judge")
+    s.add_argument("--sleep", type=float, default=0.5)
+    s.add_argument("--limit", type=int, default=None)
+
+    sub.add_parser("gemini-models", help="list Gemini models your API key can call")
+
+    s = sub.add_parser("upload", help="upload artifacts (or one file) to a HF dataset repo")
+    s.add_argument("--repo", default=None)
+    s.add_argument("--file", default=None, help="upload a single file instead of the artifacts folder")
+    s.add_argument("--in-repo", default=None)
+    s.add_argument("--private", action="store_true")
+
+    s = sub.add_parser("run-all", help="meta -> extract -> index (after ingest)")
+    s.add_argument("--embedder", choices=["st", "hash"], default="st")
+    return p
+
+
+def main(argv: list[str] | None = None) -> None:
+    a = _p().parse_args(argv)
+    s = get_settings()
+    c = a.cmd
+
+    if c == "ingest":
+        from .ingest import ingest
+        ingest(s, max_comments=a.max_comments, thread_sample_rate=a.thread_sample_rate, target_rows=a.target_rows, method=a.method)
+    elif c == "inspect-source":
+        from .source_info import inspect_source
+        inspect_source(s, n=a.n, target_rows=a.target_rows)
+    elif c == "meta":
+        from .meta import fetch_meta
+        from .extract import ExtractConfig
+        fetch_meta(s, min_comments=a.min_comments if a.min_comments is not None else ExtractConfig().min_thread_comments)
+    elif c == "extract":
+        from .extract import ExtractConfig, run_extract
+        run_extract(s, ExtractConfig(allow_heuristic_op=a.allow_heuristic_op, min_answer_score=a.min_answer_score,
+                                     max_pairs_per_thread=a.max_pairs_per_thread))
+    elif c == "import-v1":
+        from .extract import import_v1_jsonl
+        import_v1_jsonl(s, a.path)
+    elif c == "stats":
+        from .extract import corpus_stats
+        corpus_stats(s)
+    elif c == "index":
+        from .embed import make_embedder
+        from .indexing import build_index
+        build_index(s, make_embedder(a.embedder, s), limit=a.limit, faiss_kind=a.faiss)
+    elif c == "search":
+        from .pipeline import load_retriever
+        r = load_retriever(s, use_reranker=not a.no_rerank and a.mode == "hybrid_rerank")
+        res = r.search(a.query, top_k=a.k, mode=a.mode)
+        top_score = res.hits[0].rerank if res.hits else None
+        score_label = f"{top_score:.2f}" if top_score is not None else "n/a"
+        tier = ("hard abstain" if res.abstain and top_score is not None else
+                "low confidence" if res.confidence == "low" else
+                "high confidence" if res.confidence == "high" else "not applied")
+        print(f"mode={res.mode} abstain={res.abstain} top_rerank={score_label} tier={tier} timings={ {k: round(v) for k, v in res.timings.items()} }")
+        for i, h in enumerate(res.hits, 1):
+            print(f"\n[{i}] score={h.score:.2f} rerank={f'{h.rerank:.2f}' if h.rerank is not None else 'n/a'} dense#{h.dense_rank} bm25#{h.bm25_rank} | {h.doc['category']}")
+            print(f"    {h.doc['title'][:90]}\n    Q: {h.doc['question'][:160]}\n    A: {h.doc['answer'][:240]}\n    {h.doc['source_url']}")
+    elif c == "ask":
+        from .pipeline import build_pipeline
+        r = build_pipeline(s).ask(a.query, top_k=a.k)
+        score = r.search.hits[0].rerank if r.search.hits else None
+        tier = ("hard abstain" if r.search.abstain and score is not None else
+                "low confidence" if r.search.confidence == "low" else
+                "high confidence" if r.search.confidence == "high" else "not applied")
+        print(r.answer, "\n")
+        print(f"top rerank: {score:.2f}" if score is not None else "top rerank: n/a", f"| tier: {tier}")
+        if r.search.confidence == "low":
+            print("Note: low confidence retrieval; answer may be less relevant.")
+        print("citations:", r.citations)
+        for i, h in enumerate(r.search.hits, 1):
+            print(f"[{i}] {h.doc['title'][:80]}  {h.doc['source_url']}")
+    elif c == "eval-make":
+        from .eval import make_synthetic_queries
+        from .generation import GeminiClient
+        llm = GeminiClient(s.gemini_api_key, a.model, s.gemini_fallbacks) if a.model else GeminiClient.from_settings(s)
+        make_synthetic_queries(s.artifacts_dir, llm, a.n, Path(a.out), sleep=a.sleep)
+    elif c == "eval-retrieval":
+        from .eval import eval_retrieval, intervals_overlap, load_jsonl, results_markdown
+        from .pipeline import load_retriever
+        qs = load_jsonl(Path(a.queries))
+        out = Path("eval/results"); out.mkdir(parents=True, exist_ok=True)
+        names = a.reranker or [None]
+        all_per_query = []
+        base_retriever = None
+        for name in names:
+            reranker = None
+            if name:
+                if a.no_rerank:
+                    raise SystemExit("--reranker cannot be combined with --no-rerank")
+                from .embed import CrossEncoderReranker
+                reranker = CrossEncoderReranker(name)
+            retriever = load_retriever(s, reranker=reranker, use_reranker=not a.no_rerank)
+            if base_retriever is None:
+                base_retriever = retriever
+            res = eval_retrieval(retriever, qs)
+            md = results_markdown(res)
+            metric_names = [f"recall@{k}" for k in (1, 5, 10, 20)] + ["mrr@20"]
+            overlap = any(intervals_overlap(res, metric) for metric in metric_names)
+            if overlap:
+                md += "\n\nIntervals overlap; this sample does not support declaring a winner."
+            slug = name.replace("/", "--") if name else "default"
+            stem = "retrieval" if not name else f"retrieval_{slug}"
+            serializable = {mode: {k: v for k, v in val.items() if k != "per_query"} for mode, val in res.items()}
+            (out / f"{stem}.json").write_text(json.dumps(serializable, indent=2))
+            (out / f"{stem}.md").write_text(md + f"\n\n_n = {len(qs)} queries; 95% intervals shown_\n")
+            for mode, val in res.items():
+                all_per_query.extend({**row, "reranker": name or s.reranker_model} for row in val["per_query"])
+            print(md)
+            if overlap:
+                print("Intervals overlap; no winner is declared.")
+        (out / "retrieval_per_query.jsonl").write_text("".join(json.dumps(row) + "\n" for row in all_per_query))
+        print(f"\nSaved per-query ranks to {out}/retrieval_per_query.jsonl")
+        if a.sweep:
+            if base_retriever is None or base_retriever.reranker is None:
+                raise SystemExit("--sweep needs an active cross-encoder reranker.")
+            sweep = []
+            original_weight = s.rrf_dense_weight
+            original_n = s.rerank_candidates
+            for weight in (1.0, 1.5, 2.0, 3.0):
+                for candidate_n in (30, 50, 100):
+                    s.rrf_dense_weight, s.rerank_candidates = weight, candidate_n
+                    result = eval_retrieval(base_retriever, qs, modes=["hybrid_rerank"])["hybrid_rerank"]
+                    sweep.append({"dense_weight": weight, "bm25_weight": s.rrf_bm25_weight,
+                                  "rerank_n": candidate_n, **{k: v for k, v in result.items() if k != "per_query"}})
+            s.rrf_dense_weight, s.rerank_candidates = original_weight, original_n
+            print("\nSweep (exploratory; decisions need n >= 300)")
+            print("dense_weight | rerank_n | R@5 | MRR@20")
+            for row in sweep:
+                print(f"{row['dense_weight']:12.1f} | {row['rerank_n']:9d} | {row['recall@5']:.3f} | {row['mrr@20']:.3f}")
+            (out / "retrieval_sweep.json").write_text(json.dumps(sweep, indent=2))
+    elif c == "calibrate":
+        from .eval import calibrate
+        from .pipeline import load_retriever
+        seed = json.loads(Path(a.seed).read_text())
+        out = calibrate(load_retriever(s), seed["in_domain"], seed["out_of_domain"])
+        out_dir = Path("eval/results"); out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "calibration.json").write_text(json.dumps(out, indent=2))
+        print("threshold | in-domain pass | OOD abstain")
+        for row in out["threshold_table"]:
+            print(f"{row['threshold']:9.2f} | {row['in_domain_pass_rate']:14.1%} | {row['ood_abstain_rate']:11.1%}")
+        print(json.dumps(out, indent=2))
+        print(f"\nSuggested hard threshold: {out['suggested_threshold']} (OOD abstain rate {out['suggested_ood_abstain_rate']}); reranker-specific; see eval/results/calibration.json")
+    elif c == "eval-generation":
+        from .eval import eval_generation
+        from .generation import GeminiClient
+        from .pipeline import build_pipeline
+        seed = json.loads(Path(a.seed).read_text())
+        judge = None
+        if a.judge:
+            judge = GeminiClient.from_settings(s)
+            if a.judge_model:
+                judge = GeminiClient(s.gemini_api_key, a.judge_model, s.gemini_fallbacks)
+        out = eval_generation(build_pipeline(s), seed["in_domain"], seed["out_of_domain"], judge, sleep=a.sleep, limit=a.limit)
+        rows = out.pop("rows")
+        print(json.dumps(out, indent=2))
+        Path("eval/results").mkdir(parents=True, exist_ok=True)
+        Path("eval/results/generation.json").write_text(json.dumps({**out, "rows": rows}, indent=2))
+    elif c == "gemini-models":
+        import requests
+        r = requests.get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+                         headers={"x-goog-api-key": s.gemini_api_key}, timeout=30)
+        r.raise_for_status()
+        for m in r.json().get("models", []):
+            if "generateContent" in m.get("supportedGenerationMethods", []) and "flash" in m["name"]:
+                print(m["name"].replace("models/", ""))
+    elif c == "upload":
+        from .artifacts import upload_file, upload_folder
+        repo = a.repo or s.artifacts_repo
+        if not repo:
+            sys.exit("Pass --repo or set ARTIFACTS_REPO.")
+        if a.file:
+            upload_file(Path(a.file), repo, a.in_repo or Path(a.file).name, a.private)
+        else:
+            upload_folder(s.artifacts_dir, repo, a.private)
+    elif c == "run-all":
+        from .embed import make_embedder
+        from .extract import ExtractConfig, run_extract
+        from .indexing import build_index
+        from .meta import fetch_meta
+        fetch_meta(s)
+        run_extract(s, ExtractConfig())
+        build_index(s, make_embedder(a.embedder, s))
+
+
+if __name__ == "__main__":
+    main()

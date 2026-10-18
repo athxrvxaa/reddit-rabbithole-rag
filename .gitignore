@@ -1,5 +1,25 @@
-.env
+# Python environments and local caches
 .venv/
+venv/
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
 .cache/
+
+# Local data and generated artifacts
+data/
+artifacts/
+eval/results/*
+!eval/results/.gitkeep
+*.db
+*.sqlite3
+*.npy
+*.index
+*.bin
+*.pkl
+outputs.zip
+
+# Local secrets and credentials
+.env
+*.key
