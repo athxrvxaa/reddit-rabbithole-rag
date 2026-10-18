@@ -25,7 +25,7 @@ def _p() -> argparse.ArgumentParser:
     s.add_argument("--target-rows", type=int, default=5_000_000)
 
     s = sub.add_parser("meta", help="fetch submission author/title per thread (Arctic Shift)")
-    s.add_argument("--min-comments", type=int, default=10)
+    s.add_argument("--min-comments", type=int, default=None)
 
     s = sub.add_parser("extract", help="build clean Q&A pairs from comment trees")
     s.add_argument("--allow-heuristic-op", action="store_true", help="guess OP when metadata is missing (noisier)")
@@ -98,7 +98,8 @@ def main(argv: list[str] | None = None) -> None:
         inspect_source(s, n=a.n, target_rows=a.target_rows)
     elif c == "meta":
         from .meta import fetch_meta
-        fetch_meta(s, min_comments=a.min_comments)
+        from .extract import ExtractConfig
+        fetch_meta(s, min_comments=a.min_comments if a.min_comments is not None else ExtractConfig().min_thread_comments)
     elif c == "extract":
         from .extract import ExtractConfig, run_extract
         run_extract(s, ExtractConfig(allow_heuristic_op=a.allow_heuristic_op, min_answer_score=a.min_answer_score,
