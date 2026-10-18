@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import time
 import zlib
+import json
+from pathlib import Path
 
 from .config import Settings
 from .db import connect, get_state, set_state
@@ -47,6 +49,7 @@ def ingest(
     max_retries: int = 30,
     thread_sample_rate: float = 1.0,
     target_rows: int | None = None,
+    method: str = "parquet",
 ) -> None:
     """Stream comments into SQLite. Safe to Ctrl-C and re-run: it resumes where it stopped.
 
@@ -58,13 +61,22 @@ def ingest(
 
     if not (0 < thread_sample_rate <= 1):
         raise ValueError("thread_sample_rate must be in (0, 1]")
+    if method not in {"parquet", "stream"}:
+        raise ValueError("method must be 'parquet' or 'stream'")
+    _quiet_hf_progress()
+    if method == "parquet":
+        if _ingest_parquet(settings, max_comments, thread_sample_rate, target_rows):
+            return
+        print("Parquet shards were not found for the configured split; falling back to streaming.")
     con = connect(settings.db_path)
     consumed = int(get_state(con, "ingest_consumed", "0") or 0)
     if get_state(con, "ingest_complete") == "1":
         print("Ingest already complete. Delete the DB to start over.")
         return
     prev_rate = get_state(con, "ingest_sample_rate")
-    if consumed and prev_rate is not None and abs(float(prev_rate) - thread_sample_rate) > 1e-9:
+    has_progress = bool(consumed or con.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
+                       or get_state(con, "ingest_parquet_completed"))
+    if has_progress and prev_rate is not None and abs(float(prev_rate) - thread_sample_rate) > 1e-9:
         raise SystemExit(
             f"This DB was started with --thread-sample-rate {prev_rate} but you passed {thread_sample_rate}. "
             "Use the same rate to resume, or delete the DB to start over."
@@ -125,6 +137,120 @@ def ingest(
     n = con.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
     t = con.execute("SELECT COUNT(DISTINCT link_id) FROM comments").fetchone()[0]
     print(f"Done: {n:,} comments across {t:,} threads stored in {settings.db_path}")
+
+
+def _quiet_hf_progress() -> None:
+    try:
+        from datasets.utils.logging import disable_progress_bar
+        disable_progress_bar()
+    except (ImportError, AttributeError):
+        pass
+    try:
+        from huggingface_hub.utils import disable_progress_bars
+        disable_progress_bars()
+    except (ImportError, AttributeError):
+        pass
+
+
+def _ingest_parquet(settings: Settings, max_comments: int | None, rate: float, target_rows: int | None) -> bool:
+    """Ingest HF parquet shards independently; return False when shard discovery fails."""
+    try:
+        import pyarrow.parquet as pq
+        from huggingface_hub import HfApi, hf_hub_download
+    except ImportError as e:
+        raise SystemExit("Parquet ingest requires pyarrow and huggingface_hub; install requirements-pipeline.txt.") from e
+
+    files = HfApi().list_repo_files(settings.hf_dataset, repo_type="dataset")
+    split = settings.hf_split.lower()
+    shards = sorted(f for f in files if split in Path(f).name.lower() and f.lower().endswith(".parquet"))
+    if not shards:
+        return False
+
+    con = connect(settings.db_path)
+    completed = set(json.loads(get_state(con, "ingest_parquet_completed", "[]") or "[]"))
+    previous_rate = get_state(con, "ingest_sample_rate")
+    has_progress = bool(completed or con.execute("SELECT COUNT(*) FROM comments").fetchone()[0])
+    if has_progress and previous_rate is not None and abs(float(previous_rate) - rate) > 1e-9:
+        raise SystemExit(f"This DB was started with --thread-sample-rate {previous_rate} but you passed {rate}. Use the same rate to resume, or delete the DB to start over.")
+    set_state(con, "ingest_sample_rate", repr(rate)); con.commit()
+    consumed = int(get_state(con, "ingest_parquet_consumed", "0") or 0)
+    kept_total = con.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
+    if target_rows and kept_total >= target_rows:
+        print(f"Target already reached: {kept_total:,} kept rows.")
+        return True
+    pending = [f for f in shards if f not in completed]
+    if not pending:
+        set_state(con, "ingest_complete", "1"); con.commit()
+        print(f"Ingest already complete: {kept_total:,} comments.")
+        return True
+
+    download_dir = settings.data_dir / "ingest_shards"
+    download_dir.mkdir(parents=True, exist_ok=True)
+    sampled: dict[str, bool] = {}
+    from concurrent.futures import ThreadPoolExecutor
+    print(f"Reading {len(pending):,}/{len(shards):,} parquet shards from {settings.hf_dataset} [{settings.hf_split}]")
+    t0 = time.time()
+    def download(filename):
+        return filename, hf_hub_download(settings.hf_dataset, filename, repo_type="dataset", local_dir=str(download_dir))
+
+    # Keep no more than four downloads in flight. Process and remove each local shard before scheduling more.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        next_index = 0
+        futures = []
+        while next_index < min(4, len(pending)):
+            futures.append(pool.submit(download, pending[next_index])); next_index += 1
+        while futures:
+            future = futures.pop(0)
+            filename, local_path = future.result()
+            try:
+                parquet = pq.ParquetFile(local_path)
+                capped = False
+                for batch in parquet.iter_batches(columns=["id", "link_id", "parent_id", "author", "body", "score", "created_utc"], batch_size=100_000):
+                    buf = []
+                    for row in batch.to_pylist():
+                        if max_comments and consumed >= max_comments:
+                            capped = True; break
+                        consumed += 1
+                        row_tuple = _row_to_tuple(row)
+                        if row_tuple:
+                            link = row_tuple[1]
+                            if link not in sampled:
+                                sampled[link] = keep_thread(link, rate)
+                            if sampled[link]:
+                                buf.append(row_tuple)
+                    con.executemany("INSERT OR IGNORE INTO comments VALUES (?,?,?,?,?,?,?)", buf)
+                    kept_total = con.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
+                    set_state(con, "ingest_parquet_consumed", str(consumed)); con.commit()
+                    elapsed = max(time.time() - t0, 1e-6)
+                    speed = consumed / elapsed
+                    eta = max(0, len(pending) - len(completed) - 1) * max(parquet.metadata.num_rows, 1) / max(speed, 1)
+                    print(f"  scanned {consumed:,} ({speed:,.0f} rows/s, ETA ~{eta/60:,.1f} min) | kept {kept_total:,}")
+                    if target_rows and kept_total >= target_rows:
+                        capped = True
+                    if capped:
+                        break
+                if not capped:
+                    completed.add(filename)
+                    set_state(con, "ingest_parquet_completed", json.dumps(sorted(completed)))
+                    con.commit()
+                else:
+                    break
+            finally:
+                try:
+                    Path(local_path).unlink()
+                except FileNotFoundError:
+                    pass
+            if next_index < len(pending):
+                futures.append(pool.submit(download, pending[next_index])); next_index += 1
+    con.execute("CREATE INDEX IF NOT EXISTS idx_comments_link ON comments(link_id)")
+    all_done = len(completed) == len(shards)
+    if all_done:
+        set_state(con, "ingest_complete", "1")
+    con.commit()
+    n = con.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
+    threads = con.execute("SELECT COUNT(DISTINCT link_id) FROM comments").fetchone()[0]
+    print(f"Done: {n:,} comments across {threads:,} threads stored in {settings.db_path}")
+    return True
 
 
 def _flush(con, buf, consumed, seen) -> int:

@@ -18,6 +18,7 @@ def _p() -> argparse.ArgumentParser:
     s.add_argument("--thread-sample-rate", type=float, default=1.0,
                    help="keep this fraction of threads, whole threads only (e.g. 0.05 = 5%%)")
     s.add_argument("--target-rows", type=int, default=None, help="stop once N rows have been kept")
+    s.add_argument("--method", choices=["parquet", "stream"], default="parquet", help="fast shard ingest or streaming fallback")
 
     s = sub.add_parser("inspect-source", help="peek at the HF split: layout, size, suggested sample rate")
     s.add_argument("-n", type=int, default=20_000)
@@ -91,7 +92,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if c == "ingest":
         from .ingest import ingest
-        ingest(s, max_comments=a.max_comments, thread_sample_rate=a.thread_sample_rate, target_rows=a.target_rows)
+        ingest(s, max_comments=a.max_comments, thread_sample_rate=a.thread_sample_rate, target_rows=a.target_rows, method=a.method)
     elif c == "inspect-source":
         from .source_info import inspect_source
         inspect_source(s, n=a.n, target_rows=a.target_rows)

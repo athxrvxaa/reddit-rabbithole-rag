@@ -203,6 +203,17 @@ def corpus_stats(settings: Settings) -> None:
     if not n:
         return
     print("threads:", con.execute("SELECT COUNT(DISTINCT thread_id) FROM pairs").fetchone()[0])
+    from datetime import datetime, timezone
+    years = [datetime.fromtimestamp(int(r[0]), tz=timezone.utc).year for r in con.execute("SELECT created_utc FROM pairs WHERE created_utc > 0")]
+    if years:
+        lo, hi = min(years), max(years)
+        print(f"pair years: {lo}-{hi}")
+        print("year histogram:")
+        from collections import Counter
+        for year, count in sorted(Counter(years).items()):
+            print(f"  {year}: {count:,}")
+        if hi - lo < 3:
+            print("WARNING: this sample spans less than 3 years and is time-biased.")
     print("op_source:", dict(con.execute("SELECT op_source, COUNT(*) FROM pairs GROUP BY 1").fetchall()))
     print("categories:")
     for r in con.execute("SELECT category, COUNT(*) c FROM pairs GROUP BY 1 ORDER BY c DESC"):

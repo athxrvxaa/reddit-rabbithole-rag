@@ -69,6 +69,9 @@ def build_index(settings: Settings, embedder: Embedder, limit: int | None = None
     if n == 0:
         raise SystemExit("No pairs found. Run extract (or import-v1) first.")
     print(f"Building index for {n:,} documents (dim={embedder.dim})")
+    year_values = [int(r[0]) for r in src.execute(
+        f"SELECT DISTINCT strftime('%Y', created_utc, 'unixepoch') FROM ({q}) WHERE created_utc > 0"
+    ) if r[0]]
 
     # 1) doc store + embeddings (batched, memory-mapped)
     store = sqlite3.connect(str(out / "corpus.db"))
@@ -134,6 +137,8 @@ def build_index(settings: Settings, embedder: Embedder, limit: int | None = None
         "faiss_kind": kind,
         "categories": CATEGORIES,
         "n_threads": len(thread_map),
+        "min_year": min(year_values) if year_values else None,
+        "max_year": max(year_values) if year_values else None,
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))

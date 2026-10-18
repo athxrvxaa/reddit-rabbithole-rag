@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from itertools import islice
+import time
 
 from .config import Settings
 from .text import bare_id
@@ -63,10 +64,24 @@ def diagnose_rows(rows: list[dict]) -> dict:
 
 def inspect_source(settings: Settings, n: int = 20_000, target_rows: int = 5_000_000) -> None:
     from datasets import load_dataset
+    try:
+        from datasets.utils.logging import disable_progress_bar
+        disable_progress_bar()
+    except (ImportError, AttributeError):
+        pass
+    try:
+        from huggingface_hub.utils import disable_progress_bars
+        disable_progress_bars()
+    except (ImportError, AttributeError):
+        pass
 
     print(f"Reading the first {n:,} rows of {settings.hf_dataset} [{settings.hf_split}] ...")
     ds = load_dataset(settings.hf_dataset, split=settings.hf_split, streaming=True)
+    started = time.perf_counter()
     rows = list(islice(ds, n))
+    elapsed = max(time.perf_counter() - started, 1e-6)
+    measured_rate = len(rows) / elapsed
+    print(f"sample read: {len(rows):,} rows in {elapsed:.1f}s ({measured_rate:,.0f} rows/s)")
     print("columns:", sorted(rows[0].keys()))
     d = diagnose_rows(rows)
     for k, v in d.items():
@@ -75,6 +90,6 @@ def inspect_source(settings: Settings, n: int = 20_000, target_rows: int = 5_000
     if size:
         rate = suggest_rate(size, target_rows)
         print(f"\nsplit rows: {size:,}  ->  for ~{target_rows:,} kept rows use --thread-sample-rate {rate}")
-        print(f"full scan at 50k rows/s would take about {size / 50_000 / 60:,.0f} min (the ingest log shows your real speed)")
+        print(f"estimated full scan at measured speed: {size / max(measured_rate, 1e-9) / 3600:,.1f} hours")
     else:
         print("\nCould not read the split size from metadata; set SPLIT_ROWS by hand (see the HF dataset page).")

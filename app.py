@@ -24,6 +24,9 @@ except Exception as e:  # show the problem in the UI instead of crashing the Spa
 
 N_DOCS = PIPELINE.retriever.n if PIPELINE else 0
 N_THREADS = PIPELINE.retriever.manifest.get("n_threads", 0) if PIPELINE else 0
+MIN_YEAR = PIPELINE.retriever.manifest.get("min_year") if PIPELINE else None
+MAX_YEAR = PIPELINE.retriever.manifest.get("max_year") if PIPELINE else None
+YEAR_TEXT = f" · threads from {MIN_YEAR}-{MAX_YEAR}" if MIN_YEAR and MAX_YEAR else ""
 CATEGORIES = ["all"] + (PIPELINE.retriever.categories if PIPELINE else [])
 
 # ---- tiny abuse protection (your Gemini quota is the cost) --------------------------------
@@ -130,7 +133,7 @@ with gr.Blocks(title="Reddit RabbitHole RAG") as demo:
     gr.Markdown(
         f"""# 🕳️ Reddit RabbitHole RAG
 Ask a question — get an answer **cited from real Reddit AMAs**.
-*{N_DOCS:,} Q&A pairs from {N_THREADS:,} AMA threads · hybrid BM25 + dense retrieval · cross-encoder rerank · cited generation*
+*{N_DOCS:,} Q&A pairs from {N_THREADS:,} AMA threads{YEAR_TEXT} · hybrid BM25 + dense retrieval · cross-encoder rerank · cited generation*
 
 > These are personal anecdotes from individual Redditors, not verified facts or professional advice."""
     )
